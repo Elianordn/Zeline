@@ -635,13 +635,38 @@ def _deliver_file_telegram(chat_id: str, path: Any, caption: str, kind: str) -> 
         return False
 
 
+def _script_command(script: str, *, windows: bool | None = None) -> list[str]:
+    """Use native Git Bash on Windows, not a PATH WSL launcher."""
+    import shutil
+
+    if Path(script).suffix.lower() not in (".sh", ".bash"):
+        return [sys.executable, script]
+    if not (os.name == "nt" if windows is None else windows):
+        return ["bash", script]
+    candidates = []
+    git = shutil.which("git")
+    if git:
+        for parent in list(Path(git).parents)[:3]:
+            candidates.extend((parent / "bin/bash.exe", parent / "usr/bin/bash.exe"))
+    for name in ("ProgramFiles", "ProgramFiles(x86)"):
+        if os.environ.get(name):
+            candidates.append(Path(os.environ[name]) / "Git/bin/bash.exe")
+    found = shutil.which("bash")
+    if found and not {"system32", "windowsapps"}.intersection(found.replace("\\", "/").lower().split("/")):
+        candidates.append(Path(found))
+    for candidate in candidates:
+        if candidate.is_file():
+            return [str(candidate), script.replace("\\", "/")]
+    raise CronError("native Bash unavailable; install Git for Windows and expose git or bash on PATH")
+
+
 def _run_script(job: Job, should_stop=None) -> str:
     """Execute a trusted local script with bounded pipes and an owned process group."""
     from zeline import _winproc
 
     if should_stop and should_stop():
         raise CronError("script cancelled")
-    command = ["bash" if Path(job.script).suffix in (".sh", ".bash") else sys.executable, job.script]
+    command = _script_command(job.script)
     flags: dict[str, Any] = {"creationflags": _winproc.CREATION_FLAGS} if os.name == "nt" else {"start_new_session": True}
     output = [bytearray(), bytearray()]
     overflow = threading.Event()

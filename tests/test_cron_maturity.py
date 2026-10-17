@@ -12,7 +12,8 @@ from unittest.mock import Mock, patch
 class CronMaturityTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.home = Path(self.tmp.name)
+        # macOS /var and Windows 8.3 temp aliases canonicalize in production.
+        self.home = Path(self.tmp.name).resolve()
         self.env = patch.dict(os.environ, {"ZELINE_HOME": str(self.home / "state")})
         self.env.start()
         for name in list(sys.modules):
@@ -104,9 +105,36 @@ class CronMaturityTests(unittest.TestCase):
 
     def test_bash_script_paths_are_argv_not_shell_fragments(self):
         script = self.home / "fixture;not-a-command.sh"
-        script.write_text("printf 'bash fixture\\n'\n")
+        script.write_bytes(b"printf 'bash fixture\\n'\n")
         job = self.cron.add_job("1h", script=str(script), no_agent=True)
         self.assertEqual(self.cron._run_script(job), "bash fixture\n")
+
+    def test_windows_script_command_prefers_native_git_bash_over_wsl(self):
+        select = getattr(self.cron, "_script_command", None)
+        if not callable(select):
+            self.fail("platform-aware script argv builder is required")
+        git = self.home / "Git"
+        (git / "bin").mkdir(parents=True)
+        bash = git / "bin" / "bash.exe"
+        bash.write_bytes(b"selection fixture only")
+        def which(name):
+            return str(git / "cmd" / "git.exe") if name == "git" else r"C:\Windows\System32\bash.exe"
+        with patch("shutil.which", side_effect=which):
+            command = select(r"C:\Fixture Dir\job;literal.sh", windows=True)
+        self.assertEqual(command, [str(bash), "C:/Fixture Dir/job;literal.sh"])
+
+    def test_windows_script_command_rejects_wsl_only_installations(self):
+        with patch.dict(os.environ, {"ProgramFiles": "", "ProgramFiles(x86)": ""}), patch(
+            "shutil.which", side_effect=lambda name: r"C:\Windows\System32\bash.exe" if name == "bash" else None
+        ):
+            with self.assertRaisesRegex(self.cron.CronError, "Git for Windows"):
+                self.cron._script_command(r"C:\fixture.sh", windows=True)
+
+    def test_python_script_command_does_not_require_bash_on_windows(self):
+        with patch("shutil.which") as which:
+            command = self.cron._script_command(r"C:\Fixture Dir\probe.py", windows=True)
+        self.assertEqual(command, [sys.executable, r"C:\Fixture Dir\probe.py"])
+        which.assert_not_called()
 
     def test_corrupt_job_source_is_preserved_before_recovery_write(self):
         self.cron.add_job("1h", "old fixture")
@@ -402,6 +430,6 @@ for number in range(8): s.add_job('1h',f'worker-{index}-{number}')
         with patch.object(self.cron, "deliver", return_value=(True, "fixture")) as deliver:
             runner._execute(job, time.time())
         sessions.send.assert_not_called()
-        self.assertEqual(deliver.call_args.args[1], self.home.name + "\n")
+        self.assertEqual(deliver.call_args.args[1], self.home.name + os.linesep)
         self.assertTrue(self.cron.find_job(job.id).last_status.startswith("ok"))
         self.assertEqual(self.cron.find_job(job.id).script, str(script))

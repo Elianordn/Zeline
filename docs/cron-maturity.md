@@ -15,8 +15,11 @@ zeline cron add 'every 1h' --script /absolute/path/check.py --no-agent \
 ```
 
 - `script` must resolve to an existing `.py`, `.sh`, or `.bash` file. Python uses
-  the running interpreter; shell scripts require `bash` on PATH. Arguments are
-  passed as an argv list, never interpolated into a shell command.
+  the running interpreter. POSIX shell scripts require `bash` on PATH; Windows
+  prefers native Git for Windows Bash (installed Git location or PATH), never
+  a `System32`/`WindowsApps` WSL launcher. Script paths are separate argv entries,
+  not shell fragments. Shell sources should use LF; Python stdout retains the
+  platform's original newline bytes (including CRLF on Windows).
 - A relative script requires an explicit absolute workdir. Workdir must exist.
 - `--no-agent` never constructs or calls an agent/model. Successful stdout is
   delivered verbatim; exactly empty stdout is saved but not sent to a channel.
