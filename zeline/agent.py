@@ -242,6 +242,7 @@ class Zeline:
         return bool(getattr(config, "STREAM_RESPONSES", True))
 
     def _build_system_prompt(self) -> str:
+        from zeline import durable_jobs
         return (
             config.SYSTEM_PROMPT
             + self.executor.memory.prompt_block()
@@ -255,6 +256,8 @@ class Zeline:
             # gateway restart: a rebuilt session starts knowing what was left open
             # instead of the operator re-explaining it.
             + tasks.prompt_block(self.identity)
+            + durable_jobs.prompt_block(self.identity, enabled=any(
+                item.name == "delegate_task" for item in self.executor._enabled_native_defs()))
             + self._system_extra
             + f"\n\nActive runtime (non-secret): model={self.model}; protocol={self.protocol}; profile={self.executor.profile}. "
             + "\n\nSimpan fakta jangka panjang yang benar-benar berguna memakai add_memory. "
