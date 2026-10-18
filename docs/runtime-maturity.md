@@ -13,8 +13,10 @@ No additional service or mandatory dependency is introduced.
    results cannot resolve a failure; cancelled/pending results cannot teach a fix.
 2. Transactional identity-scoped facts with one-time, lossless JSON import,
    stable IDs/revisions, final-state atomic batches and stale-write rejection.
-3. Bounded memory context (6,000 characters, not a token-budget guarantee),
-   lexical record inspection and exact corrections through existing native tools.
+3. Bounded memory context (6,000 characters for the legacy/native memory block,
+   4,000 characters for per-turn recall; neither is a token-budget guarantee),
+   lexical record inspection, stable record/revision citations and exact corrections
+   through existing native tools.
 4. Durable local job/dependency records, lease-token claims, expired-worker
    fencing, restart recovery and identity-scoped result handoff. Existing
    synchronous delegation remains available and unchanged by default.
@@ -103,8 +105,9 @@ The opt-in fail-closed tool-dispatch gate is documented separately in
 [execution-policies.md](execution-policies.md); it does not sandbox policy code
 or govern direct cron script processes.
 
-Per-turn semantic retrieval, evidence-linked consolidation, complete forget across
-archives/backups, GEPA/held-out optimization and optional OS execution backends
-remain separately testable follow-ups. A generic plugin callback is not an
+Per-turn lexical retrieval with bounded cited context is implemented in the agent
+boundary. Semantic/embedding retrieval, evidence-linked consolidation, complete
+forget across archives/backups, GEPA/held-out optimization and optional OS execution
+backends remain separately testable follow-ups. A generic plugin callback is not an
 execution sandbox. Changes to live security policy and deployment require
 explicit operator approval.
