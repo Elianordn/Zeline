@@ -2660,6 +2660,28 @@ def _split_message(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
     return parts or ["(jawaban kosong)"]
 
 
+def _telegram_html_parts(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
+    """Split source Markdown until every rendered HTML payload fits Telegram."""
+    pending = _split_message(text, limit)
+    rendered_parts: list[str] = []
+    while pending:
+        part = pending.pop(0)
+        rendered = _markdown_to_telegram_html(part)
+        if len(rendered) <= limit:
+            rendered_parts.append(rendered)
+            continue
+        # Escaping can expand one source character into several HTML entity
+        # characters. Re-split the source, not rendered HTML, so tags/fences
+        # remain balanced. Leave headroom for renderer-added tags.
+        reduced = max(1, min(len(part) - 1, int(len(part) * limit / len(rendered)) - 64))
+        pieces = _split_message(part, reduced)
+        if len(pieces) == 1 and pieces[0] == part:
+            midpoint = max(1, len(part) // 2)
+            pieces = _split_plain(part, midpoint)
+        pending[:0] = pieces
+    return rendered_parts
+
+
 def _load_offset() -> int:
     try:
         data = json.loads(OFFSET_FILE.read_text(encoding="utf-8"))
@@ -2981,11 +3003,14 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         if not sentence:
             return
         live.detach()
-        for part in _split_message(sentence):
-            _api_call(
+        for rendered_part in _telegram_html_parts(sentence):
+            sent = _api_call(
                 api, "sendMessage", chat_id=chat_id,
-                text=_markdown_to_telegram_html(part), parse_mode="HTML",
+                text=rendered_part, parse_mode="HTML",
             )
+            if sent is None:
+                print("  [telegram] narration delivery stopped after a failed part", flush=True)
+                break
         _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
                   timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
 
@@ -3048,21 +3073,24 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
     # beberapa pertanyaan dalam bubble terpisah. Part berikutnya tanpa reply
     # (biar rantai jawaban tidak menumpuk quote berulang).
     first_part = True
-    for part in _split_message(reply):
+    for rendered_part in _telegram_html_parts(reply):
         if cancelled():
             return
         extra: dict[str, Any] = {}
         if first_part and reply_to_message_id:
             extra["reply_to_message_id"] = reply_to_message_id
             extra["allow_sending_without_reply"] = True
-        _api_call(
+        sent = _api_call(
             api,
             "sendMessage",
             chat_id=chat_id,
-            text=_markdown_to_telegram_html(part),
+            text=rendered_part,
             parse_mode="HTML",
             **extra,
         )
+        if sent is None:
+            print("  [telegram] final reply delivery stopped after a failed part", flush=True)
+            break
         first_part = False
 
     # Self-improvement: setelah turn berbobot (banyak tool), jalankan refleksi di

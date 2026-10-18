@@ -526,40 +526,81 @@ class ForgeStore:
     def _pins_path(self) -> Path:
         return self.root / "pins.json"
 
+    @contextmanager
+    def _pins_lock(self):
+        """Serialize pin registry read-modify-write across processes."""
+        path = self.root / "pins.lock"
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with path.open("a+b") as handle:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
     def _load_pins(self) -> set[str]:
         path = self._pins_path()
-        if path.is_file():
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-                if isinstance(data, list):
-                    return {str(n) for n in data if isinstance(n, str)}
-            except (json.JSONDecodeError, OSError):
-                pass
-        return set()
+        if not path.exists():
+            return set()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            raise ValueError("Pin registry is unreadable; refusing an unsafe operation") from exc
+        if not isinstance(data, list) or any(
+            not isinstance(item, str) or not _NAME.fullmatch(item) for item in data
+        ):
+            raise ValueError("Pin registry has an invalid schema; refusing an unsafe operation")
+        return set(data)
 
     def _save_pins(self, pins: set[str]) -> None:
         path = self._pins_path()
-        path.write_text(json.dumps(sorted(pins), ensure_ascii=False), encoding="utf-8")
+        payload = json.dumps(sorted(pins), ensure_ascii=False)
+        fd, staged_name = tempfile.mkstemp(prefix=".pins-", suffix=".tmp", dir=path.parent)
+        staged = Path(staged_name)
         try:
-            path.chmod(0o600)
-        except OSError:
-            pass
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            staged.chmod(0o600)
+            os.replace(staged, path)
+        finally:
+            with contextlib.suppress(OSError):
+                staged.unlink()
 
     def pin(self, name: str) -> str:
         _name(name)
         entry, _scope = self._source(name)
         if entry is None:
             raise ValueError(f"Skill '{name}' not found")
-        pins = self._load_pins()
-        pins.add(name)
-        self._save_pins(pins)
+        with self._pins_lock():
+            pins = self._load_pins()
+            pins.add(name)
+            self._save_pins(pins)
         return f"Pinned '{name}'. It is now protected from deletion and archival."
 
     def unpin(self, name: str) -> str:
         _name(name)
-        pins = self._load_pins()
-        pins.discard(name)
-        self._save_pins(pins)
+        with self._pins_lock():
+            pins = self._load_pins()
+            pins.discard(name)
+            self._save_pins(pins)
         return f"Unpinned '{name}'. It can now be deleted or archived."
 
     def is_pinned(self, name: str) -> bool:
@@ -603,20 +644,23 @@ class ForgeStore:
         source = self._archive_dir() / name
         if not source.exists():
             raise ValueError(f"'{name}' not found in archive")
-        located = skills._locate_unit(name)
-        if located is not None:
-            raise ValueError(f"'{name}' already exists in active skills — delete or rename it first")
         dest = skills.PRIVATE_SKILLS_DIR / name
+        flat_dest = skills.PRIVATE_SKILLS_DIR / f"{name}.md"
+        # Public skills may coexist: restoring a private override is valid. Only
+        # private destination paths can collide with the archived unit.
+        if dest.exists() or flat_dest.exists():
+            raise ValueError(f"'{name}' already exists in private skills — delete or rename it first")
         if source.is_dir() and (source / "SKILL.md").is_file():
             shutil.move(str(source), str(dest))
         elif source.is_dir():
-            # Flat skill archived into a directory wrapper
-            for child in source.iterdir():
-                if child.is_file():
-                    shutil.move(str(child), str(skills.PRIVATE_SKILLS_DIR / child.name))
-                    break
-            with contextlib.suppress(OSError):
-                source.rmdir()
+            # Flat skills are archived in a directory wrapper.
+            files = [child for child in source.iterdir() if child.is_file()]
+            if len(files) != 1 or files[0].name != f"{name}.md":
+                raise ValueError(f"Archived skill '{name}' has an invalid layout")
+            shutil.move(str(files[0]), str(flat_dest))
+            source.rmdir()
+        else:
+            raise ValueError(f"Archived skill '{name}' has an invalid layout")
         return f"Restored '{name}' to private skills."
 
     def archived(self) -> list[str]:
@@ -628,6 +672,8 @@ class ForgeStore:
     def usage_summary(self, name: str | None = None, *, days: int = 90,
                       now: float | None = None) -> list[dict[str, Any]]:
         """Per-skill usage stats: total uses, last used, success rate."""
+        if type(days) is not int or not 1 <= days <= 36_500:
+            raise ValueError("days must be an integer from 1 to 36500")
         current = time.time() if now is None else float(now)
         cutoff = current - days * 86400
         with self.connect() as db:
@@ -668,6 +714,10 @@ class ForgeStore:
         (default), only reports what would be archived. Never touches pinned
         skills.
         """
+        if type(stale_days) is not int or not 1 <= stale_days <= 36_500:
+            raise ValueError("stale_days must be an integer from 1 to 36500")
+        if type(min_uses) is not int or min_uses < 0:
+            raise ValueError("min_uses must be a non-negative integer")
         from zeline import skills
         current = time.time() if now is None else float(now)
         candidates = []
@@ -675,8 +725,12 @@ class ForgeStore:
             if self.is_pinned(unit_name):
                 continue
             try:
-                mtime = skill_md.stat().st_mtime
-            except OSError:
+                unit = skill_md.parent if skill_md.name == "SKILL.md" else skill_md
+                files = [unit] if unit.is_file() else [
+                    child for child in unit.rglob("*") if child.is_file()
+                ]
+                mtime = max(child.stat().st_mtime for child in files)
+            except (OSError, ValueError):
                 continue
             age_days = (current - mtime) / 86400
             if age_days < stale_days:

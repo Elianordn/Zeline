@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import html
 import json
 import re
 import time
@@ -69,7 +70,7 @@ def _format_reflection_actions(actions: list[tuple[str, dict[str, Any], str]]) -
         clean = str(result).strip()
         if name == "manage_skill":
             action = str(args.get("action", "")).strip().lower()
-            skill = str(args.get("name", "")).strip() or "skill"
+            skill = html.escape(str(args.get("name", "")).strip() or "skill", quote=False)
             if action == "create":
                 self_improvement.append(
                     f"SkillForge proposal for <code>{skill}</code> created — active skill unchanged; structural and behavioral review pending."
@@ -1143,14 +1144,30 @@ class Zeline:
                 # Serial: cek pembatalan SEBELUM tiap tool, jadi /stop tidak
                 # perlu menunggu seluruh rangkaian tool selesai.
                 results = []
-                for _tc, name, args in parsed_calls:
-                    if should_stop and should_stop():
-                        break
-                    results.append(self.executor.run(name, args))
-                    self._checkpoint([
-                        {"role": "tool", "tool_call_id": str(call.get("id", "")), "content": str(result)}
-                        for (call, _name, _args), result in zip(parsed_calls, results)
-                    ])
+                try:
+                    for _tc, name, args in parsed_calls:
+                        if should_stop and should_stop():
+                            break
+                        results.append(self.executor.run(name, args))
+                        self._checkpoint([
+                            {"role": "tool", "tool_call_id": str(call.get("id", "")), "content": str(result)}
+                            for (call, _name, _args), result in zip(parsed_calls, results)
+                        ])
+                except BudgetExceeded:
+                    # A later call can exhaust the shared budget after earlier
+                    # calls already performed side effects. Commit those real
+                    # results before the outer handler repairs only unanswered
+                    # call IDs; otherwise completed work is rewritten as UNKNOWN.
+                    for (tool_call, completed_name, completed_args), result in zip(parsed_calls, results):
+                        if on_tool_result:
+                            on_tool_result(completed_name, completed_args, result)
+                        self.messages.append({
+                            "role": "tool",
+                            "tool_call_id": str(tool_call.get("id", "")),
+                            "content": str(result),
+                        })
+                    self._checkpoint()
+                    raise
 
             if should_stop and should_stop():
                 # Preserve completed side effects before filling cancelled tool

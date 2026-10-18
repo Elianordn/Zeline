@@ -885,7 +885,10 @@ def _delete_skill(name: str, absorbed_into: str) -> str:
                 f"ERROR: '{name}' is pinned — run `zeline skillforge unpin {name}` first."
             )
     except Exception:
-        pass  # SkillForge unavailable; allow delete to proceed.
+        return (
+            f"ERROR: could not verify pin protection for '{name}'; "
+            "refusing deletion until the registry is repaired."
+        )
     if absorbed_into:
         try:
             merged = _safe_name(absorbed_into)

@@ -66,6 +66,12 @@ class ExecutionLimitTests(unittest.TestCase):
         self.assertEqual(execute.call_count, 1)
         self.assertIn("tool_calls limit reached (1)", result)
         self.assertFalse(importlib.import_module("zeline.tool_protocol").unanswered_call_ids(self.agent.messages))
+        tool_results = {
+            message["tool_call_id"]: message["content"]
+            for message in self.agent.messages if message.get("role") == "tool"
+        }
+        self.assertIn("exit=0", tool_results["0"])
+        self.assertIn("UNKNOWN", tool_results["1"])
 
     def test_parent_and_parallel_children_share_request_allowance(self):
         self.module.config.MAX_PROVIDER_REQUESTS_PER_TURN = 2

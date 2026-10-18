@@ -4,6 +4,7 @@ These tests cover the curator lifecycle without touching the agent loop,
 gateway, or tool dispatch — purely ForgeStore + skills data operations.
 """
 import json
+import multiprocessing
 import os
 import sys
 import tempfile
@@ -11,6 +12,17 @@ import time
 import unittest
 from pathlib import Path
 from unittest import mock
+
+
+def _pin_worker(home, name, gate, queue):
+    os.environ["ZELINE_HOME"] = home
+    from zeline.skillforge import ForgeStore
+    gate.wait()
+    try:
+        ForgeStore().pin(name)
+        queue.put(None)
+    except Exception as exc:
+        queue.put(str(exc))
 
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
 if str(SOURCE_ROOT) not in sys.path:
@@ -87,6 +99,65 @@ class PinTests(CuratorTestBase):
         store2 = self.skillforge.ForgeStore()
         self.assertTrue(store2.is_pinned("delta"))
 
+    def test_corrupt_registry_blocks_deletion_and_archive(self):
+        self._create_private_skill("protected")
+        pins = self.store._pins_path()
+        pins.write_text('{broken', encoding="utf-8")
+        self.assertIn("ERROR", self.skills.manage_skill("delete", name="protected"))
+        with self.assertRaises(ValueError):
+            self.store.archive("protected")
+        with self.assertRaises(ValueError):
+            self.store.unpin("protected")
+        self.assertIsNotNone(self.skills._locate_unit("protected"))
+        self.assertEqual(pins.read_text(encoding="utf-8"), '{broken')
+
+    def test_missing_registry_is_empty_but_wrong_schema_fails_closed(self):
+        self._create_private_skill("protected")
+        self.assertFalse(self.store.is_pinned("protected"))
+        for value in ('{}', '["protected", 42]', '["../outside"]'):
+            with self.subTest(value=value):
+                self.store._pins_path().write_text(value, encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    self.store.is_pinned("protected")
+
+    def test_registry_read_error_blocks_deletion(self):
+        self._create_private_skill("protected")
+        self.store.pin("protected")
+        path = self.store._pins_path()
+        with mock.patch.object(Path, "read_text", autospec=True, side_effect=OSError("disk unavailable")):
+            self.assertIn("ERROR", self.skills.manage_skill("delete", name="protected"))
+        self.assertTrue(path.exists())
+        self.assertIsNotNone(self.skills._locate_unit("protected"))
+
+    def test_pin_write_failure_preserves_previous_registry(self):
+        self._create_private_skill("alpha")
+        self._create_private_skill("beta")
+        self.store.pin("alpha")
+        before = self.store._pins_path().read_bytes()
+        with mock.patch.object(os, "replace", side_effect=OSError("disk unavailable")):
+            with self.assertRaises(OSError):
+                self.store.pin("beta")
+        self.assertEqual(self.store._pins_path().read_bytes(), before)
+
+    def test_parallel_process_pins_do_not_lose_updates(self):
+        names = [f"parallel-{index}" for index in range(8)]
+        for name in names:
+            self._create_private_skill(name)
+        ctx = multiprocessing.get_context("fork") if "fork" in multiprocessing.get_all_start_methods() else multiprocessing.get_context()
+        gate, queue = ctx.Event(), ctx.Queue()
+        processes = [ctx.Process(target=_pin_worker, args=(str(self.home / "state"), name, gate, queue)) for name in names]
+        for process in processes:
+            process.start()
+        gate.set()
+        for process in processes:
+            process.join(timeout=15)
+            if process.is_alive():
+                process.terminate()
+                process.join()
+            self.assertEqual(process.exitcode, 0)
+        self.assertEqual([queue.get(timeout=2) for _ in processes], [None] * len(processes))
+        self.assertEqual(set(self.store.pinned()), set(names))
+
 
 class ArchiveTests(CuratorTestBase):
     def test_archive_and_restore(self):
@@ -137,13 +208,41 @@ class ArchiveTests(CuratorTestBase):
 
     def test_restore_when_active_raises(self):
         self._create_private_skill("conflict")
-        # Archive it
         self.store.archive("conflict")
-        # Recreate with same name
         self._create_private_skill("conflict")
         with self.assertRaises(ValueError) as ctx:
             self.store.restore("conflict")
         self.assertIn("already exists", str(ctx.exception).lower())
+
+    def test_restore_private_override_even_if_public_exists(self):
+        self._create_private_skill("override")
+        public = self.skills.PUBLIC_SKILLS_DIR / "override.md"
+        public.write_text("# Public\n", encoding="utf-8")
+        self.store.archive("override")
+        self.assertEqual(self.skills._locate_unit("override")[0], "public")
+        self.store.restore("override")
+        self.assertEqual(self.skills._locate_unit("override")[0], "private")
+        self.assertTrue(public.exists())
+
+    def test_restore_rejects_empty_private_target(self):
+        self._create_private_skill("collision")
+        self.store.archive("collision")
+        target = self.skills.PRIVATE_SKILLS_DIR / "collision"
+        target.mkdir()
+        with self.assertRaises(ValueError):
+            self.store.restore("collision")
+        self.assertTrue((self.store._archive_dir() / "collision" / "SKILL.md").is_file())
+        self.assertFalse((target / "collision" / "SKILL.md").exists())
+
+    def test_restore_flat_skill_rejects_existing_private_flat_target(self):
+        flat = self.skills.PRIVATE_SKILLS_DIR / "flat.md"
+        flat.write_text("# Original\n", encoding="utf-8")
+        self.store.archive("flat")
+        flat.write_text("# New\n", encoding="utf-8")
+        with self.assertRaises(ValueError):
+            self.store.restore("flat")
+        self.assertEqual(flat.read_text(encoding="utf-8"), "# New\n")
+        self.assertIn("flat", self.store.archived())
 
 
 class UsageSummaryTests(CuratorTestBase):
@@ -185,6 +284,11 @@ class UsageSummaryTests(CuratorTestBase):
                                 now=now - 100 * 86400)
         result = self.store.usage_summary("old-skill", days=90, now=now)
         self.assertEqual(result, [])
+
+    def test_usage_rejects_non_positive_window(self):
+        for days in (0, -1, True, 36_501):
+            with self.subTest(days=days), self.assertRaises(ValueError):
+                self.store.usage_summary(days=days)
 
 
 class PruneTests(CuratorTestBase):
@@ -245,6 +349,24 @@ class PruneTests(CuratorTestBase):
         # mtime is now, so it's not stale
         result = self.store.prune(stale_days=180, dry_run=True)
         self.assertEqual(result, [])
+
+    def test_prune_uses_newest_file_in_skill_tree(self):
+        self._create_private_skill("maintained-skill")
+        skill_dir = self.skills.PRIVATE_SKILLS_DIR / "maintained-skill"
+        reference = skill_dir / "references" / "notes.md"
+        reference.parent.mkdir()
+        reference.write_text("current", encoding="utf-8")
+        old_time = time.time() - 200 * 86400
+        os.utime(skill_dir / "SKILL.md", (old_time, old_time))
+        self.assertEqual(self.store.prune(stale_days=180, dry_run=True), [])
+
+    def test_prune_rejects_unsafe_windows_and_minimums(self):
+        for days in (0, -1, True, 36_501):
+            with self.subTest(days=days), self.assertRaises(ValueError):
+                self.store.prune(stale_days=days)
+        for minimum in (-1, True):
+            with self.subTest(minimum=minimum), self.assertRaises(ValueError):
+                self.store.prune(min_uses=minimum)
 
 
 class CLITests(CuratorTestBase):

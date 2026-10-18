@@ -1063,6 +1063,14 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertGreater(len(parts), 1)
         self.assertTrue(all(len(part) <= 4_000 for part in parts))
 
+    def test_rendered_html_parts_stay_within_telegram_limit(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        source = "<&" * 1_600
+        rendered = telegram._telegram_html_parts(source)
+        self.assertGreater(len(rendered), 1)
+        self.assertTrue(all(len(part) <= telegram.TELEGRAM_MESSAGE_LIMIT for part in rendered))
+        self.assertEqual("".join(rendered).replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&"), source)
+
     def test_split_message_never_breaks_code_fence(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
         # Prose + satu blok kode raksasa (>2 potongan) + prose penutup.

@@ -355,6 +355,48 @@ class _JobsMutex:
 
 _JOBS_LOCK = _JobsMutex()
 
+# Claim-lease duration: if a claim is older than this, another process may
+# reclaim the job (handles crashed processes that never cleared their claim).
+_CLAIM_LEASE_SECONDS = DEFAULT_JOB_TIMEOUT + 120
+
+
+def _try_claim(job_id: str, moment: float) -> bool:
+    """Atomically claim a job under the cross-process SQLite mutex.
+
+    Returns True if the claim was acquired; False if another process already
+    holds it. Claims live in the lock database (not jobs.json) so the Job
+    dataclass stays unchanged.
+    """
+    with _JOBS_LOCK as ctx:
+        db = ctx._local.database
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS claims "
+            "(job_id TEXT PRIMARY KEY, claimed_at REAL NOT NULL, pid INTEGER NOT NULL)"
+        )
+        row = db.execute(
+            "SELECT claimed_at FROM claims WHERE job_id = ?", (job_id,)
+        ).fetchone()
+        if row is not None:
+            claimed_at = row[0]
+            if (moment - claimed_at) < _CLAIM_LEASE_SECONDS:
+                return False
+        db.execute(
+            "INSERT OR REPLACE INTO claims (job_id, claimed_at, pid) VALUES (?, ?, ?)",
+            (job_id, moment, os.getpid()),
+        )
+    return True
+
+
+def _release_claim(job_id: str) -> None:
+    """Clear the claim after execution completes."""
+    with _JOBS_LOCK as ctx:
+        db = ctx._local.database
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS claims "
+            "(job_id TEXT PRIMARY KEY, claimed_at REAL NOT NULL, pid INTEGER NOT NULL)"
+        )
+        db.execute("DELETE FROM claims WHERE job_id = ?", (job_id,))
+
 
 def _write_jobs(jobs: list[Job]) -> None:
     with _JOBS_LOCK:
@@ -378,9 +420,18 @@ def _write_jobs(jobs: list[Job]) -> None:
                     if backup.read_bytes() != previous:
                         raise CronError("cron recovery backup checksum mismatch; original source retained")
                 else:
-                    fd = os.open(backup, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-                    with os.fdopen(fd, "wb") as stream:
-                        stream.write(previous)
+                    fd = os.open(str(backup) + ".tmp", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                    staged = Path(str(backup) + ".tmp")
+                    try:
+                        with os.fdopen(fd, "wb") as stream:
+                            stream.write(previous)
+                            stream.flush()
+                            os.fsync(stream.fileno())
+                        os.replace(staged, backup)
+                    except BaseException:
+                        with __import__("contextlib").suppress(OSError):
+                            staged.unlink()
+                        raise
         temp = jobs_path().with_name(f"jobs.{os.getpid()}.{threading.get_ident()}.tmp")
         temp.write_text(
             json.dumps([asdict(job) for job in jobs], ensure_ascii=False, indent=2) + "\n",
@@ -852,6 +903,14 @@ class Scheduler:
                     _record_skip(job.id, next_run=job.parsed().next_after(moment),
                                  expected_generation=_generation(job))
                     continue
+            # Cross-process claim: mark the job as "claimed" in jobs.json under
+            # the SQLite mutex so a second gateway process reading the same file
+            # will not also start it. The claim writes a `_claimed_at` timestamp;
+            # _execute clears it on completion via _record_run.
+            claimed = _try_claim(job.id, moment)
+            if not claimed:
+                continue
+            with self._lock:
                 self._running.add(job.id)
             started.append(job.id)
             worker = threading.Thread(
@@ -874,10 +933,23 @@ class Scheduler:
                 text = _run_script(job, self._stop.is_set)
             else:
                 text = self._run_agent(job)
+            # Detect agent-level failures that return an ERROR envelope instead
+            # of raising. Without this, budget exhaustion or provider failures
+            # are recorded as successful output and propagated via context_from.
+            agent_error = isinstance(text, str) and text.lstrip().startswith("ERROR")
             path = save_output(job, text)
             result_path = str(path)
             if job.no_agent and not text:
                 status = "ok: silent"
+                return
+            if agent_error:
+                status = f"error: agent returned failure — {text[:200]}"
+                try:
+                    delivered, _ = deliver(job, f"⚠️ Scheduled job '{job.id}' failed:\n{text}")
+                    if not delivered:
+                        status += "; alert undelivered"
+                except Exception:
+                    status += "; alert delivery failed"
                 return
             delivered, detail = deliver(job, text)
             status = f"ok: {detail}" if delivered else f"ok (undelivered: {detail})"
@@ -905,12 +977,17 @@ class Scheduler:
             except CronError:
                 next_run = time.time() + 3600
             try:
+                is_failure = not status.startswith("ok")
                 _record_run(job.id, status=status, when=moment, next_run=next_run,
-                            output_path=result_path if status.startswith("ok") else "",
+                            output_path=result_path if not is_failure else "",
                             expected_generation=_generation(job))
             except Exception as exc:
                 self.last_error = f"cron {job.id} metadata: {exc.__class__.__name__}: {exc}"[:500]
             finally:
+                try:
+                    _release_claim(job.id)
+                except Exception:
+                    pass
                 with self._lock:
                     self._running.discard(job.id)
 

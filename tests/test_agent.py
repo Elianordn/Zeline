@@ -705,6 +705,13 @@ class AgentLoopTests(unittest.TestCase):
         # normal turn on the same session does not keep tagging as reflection.
         self.assertEqual(agent.executor.memory.default_source, "user")
 
+    def test_reflection_summary_escapes_skill_name_for_html_delivery(self):
+        summary = self.agent_module._format_reflection_actions([
+            ("manage_skill", {"action": "create", "name": "A&B<bad>"}, "Skill proposal forged"),
+        ])
+        self.assertIn("<code>A&amp;B&lt;bad&gt;</code>", summary)
+        self.assertNotIn("<code>A&B<bad></code>", summary)
+
     def test_reflection_summary_is_structured_and_never_claims_unapplied_work(self):
         summary = self.agent_module._format_reflection_actions([
             ("manage_skill", {"action": "create", "name": "demo-deploy-flow"}, "Skill proposal forge_a"),
