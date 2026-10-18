@@ -52,6 +52,57 @@ _PARALLEL_SAFE_TOOLS = frozenset({
 # yang paling berharga.
 REFLECTION_TOOL_ROUNDS = 5
 
+
+def _format_reflection_actions(actions: list[tuple[str, dict[str, Any], str]]) -> str | None:
+    """Render reflection output as truthful, reviewable outcomes.
+
+    Reflection is deliberately proposal-only for skill changes.  The chat must
+    never imply that a candidate was applied, scored, or behaviorally verified
+    when it only reached SkillForge.  A lesson is reported separately because
+    it is useful only after a verified successful retry has resolved it.
+    """
+    self_improvement: list[str] = []
+    refinements: list[str] = []
+    enhancements: list[str] = []
+    for name, args, result in actions:
+        clean = str(result).strip()
+        if name == "manage_skill":
+            action = str(args.get("action", "")).strip().lower()
+            skill = str(args.get("name", "")).strip() or "skill"
+            if action == "create":
+                self_improvement.append(
+                    f"SkillForge proposal for <code>{skill}</code> created — active skill unchanged; structural and behavioral review pending."
+                )
+            elif action == "patch":
+                refinements.append(
+                    f"SkillForge revision proposal for <code>{skill}</code> created — active skill unchanged; no effectiveness score is claimed before evaluation."
+                )
+            else:
+                self_improvement.append(clean)
+        elif name == "resolve_lesson":
+            enhancements.append("Resolved a recorded lesson after a verified successful retry.")
+        elif name == "add_memory":
+            enhancements.append("Saved a low-confidence reflection memory for future-session guidance.")
+    lines = []
+    # A reflection is an improvement review by definition.  Keep this primary
+    # phase mandatory whenever reflection produced a learning outcome; the two
+    # follow-up phases remain conditional on their actual evidence.
+    if self_improvement:
+        lines.append("📙 <b>Self-Improvement review:</b> " + " ".join(self_improvement))
+    elif refinements or enhancements:
+        lines.append(
+            "📙 <b>Self-Improvement review:</b> Reviewed verified task evidence; "
+            "no separate reusable-skill proposal was needed."
+        )
+    if refinements:
+        lines.append("📘 <b>Refinements review:</b> " + " ".join(refinements))
+    if enhancements:
+        lines.append("📗 <b>Enhancements review:</b> " + " ".join(enhancements))
+    # A blank-line delimiter is intentional: Telegram emits each phase as a
+    # separate message rather than merging unrelated review outcomes into one
+    # noisy card.
+    return "\n\n".join(lines) if lines else None
+
 _CAPTCHA_INTENT_RE = re.compile(
     r"(?:2\s*captcha|capsolver|captcha|turnstile|cloudflare\s+(?:challenge|block|captcha))",
     re.IGNORECASE,
@@ -1190,7 +1241,13 @@ class Zeline:
         # ``last_turn_tool_calls`` remains a compatibility escape hatch for
         # callers/tests that construct an agent and mark a substantial turn
         # directly. Normal sends maintain the cumulative counter.
-        if max(self._tool_calls_since_reflection, self.last_turn_tool_calls) < min_tool_calls:
+        observed_tool_calls = max(self._tool_calls_since_reflection, self.last_turn_tool_calls)
+        if observed_tool_calls < min_tool_calls:
+            # Every tool outcome has already been processed synchronously by
+            # ToolExecutor._audit: failures become durable lessons and a later
+            # matching success resolves them.  This gate only skips the costly
+            # LLM/SkillForge review for lightweight turns; it never skips the
+            # mandatory evidence-learning path.
             return None
         # Snapshot history saat ini; refleksi tidak boleh mencemari percakapan
         # utama, jadi kita kerjakan di salinan pesan yang dibuang setelah selesai.
@@ -1249,7 +1306,7 @@ class Zeline:
                 ),
             }
         )
-        actions: list[str] = []
+        actions: list[tuple[str, dict[str, Any], str]] = []
         # Anything the model saves to memory DURING reflection is an autonomous
         # inference, not something the user stated. Tag it as source=reflection
         # (lower confidence) so a later prune can tell self-writes from the
@@ -1286,8 +1343,9 @@ class Zeline:
                         and str(args.get("action", "")).strip().lower() not in {"list", "inventory"}
                     )
                     is_lesson_change = name == "resolve_lesson"
-                    if (is_skill_change or is_lesson_change) and not result.startswith("ERROR"):
-                        actions.append(result)
+                    is_reflection_memory = name == "add_memory"
+                    if (is_skill_change or is_lesson_change or is_reflection_memory) and not result.startswith("ERROR"):
+                        actions.append((name, args, result))
                     self.messages.append(
                         {"role": "tool", "tool_call_id": str(tool_call.get("id", "")), "content": result}
                     )
@@ -1307,5 +1365,5 @@ class Zeline:
             # A reflection may have changed memory, lessons, or skills. Make the
             # next ordinary turn see the new knowledge immediately.
             self._refresh_system_prompt()
-        return "\n".join(actions) if actions else None
+        return _format_reflection_actions(actions)
 
