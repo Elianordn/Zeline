@@ -1849,7 +1849,7 @@ def cmd_cron(
     deliver: str | None = None,
     job_id: str | None = None,
     script: str = "", no_agent: bool = False, workdir: str = "", timeout: float = 900,
-    model: str = "", profile: str = "", skills: list[str] | None = None, context_from: list[str] | None = None,
+    model: str = "", profile: str = "", skills: list[str] | None = None, context_from: list[str] | None = None, timezone: str = "",
 ) -> int:
     """Manage scheduled jobs."""
     from zeline import scheduler as cron_module
@@ -1868,7 +1868,7 @@ def cmd_cron(
             print(f"  {job.describe()}")
             print(f"      {job.prompt[:100]}")
             if job.last_status:
-                stamp = f"{cron_module.format_time(job.last_run)} " if job.last_run else ""
+                stamp = f"{cron_module.format_time(job.last_run, job.timezone)} " if job.last_run else ""
                 print(f"      last: {stamp}{job.last_status}")
         print()
         print("  Jobs run inside the gateway process, so they only fire while it is up.")
@@ -1882,13 +1882,13 @@ def cmd_cron(
         try:
             job = cron_module.add_job(schedule, prompt or "", deliver or "local",
                                       script=script, no_agent=no_agent, workdir=workdir, timeout=timeout,
-                                      model=model, profile=profile, skills=skills, context_from=context_from)
+                                      model=model, profile=profile, skills=skills, context_from=context_from, timezone=timezone)
         except cron_module.CronError as exc:
             print(f"ERROR: {exc}")
             return 1
         print(
             f"Created {job.id} — {job.parsed().describe()}, "
-            f"first run {cron_module.format_time(job.next_run)}"
+            f"first run {cron_module.format_time(job.next_run, job.timezone)}"
         )
         if job.deliver in ("local", "", "none"):
             print(f"  Results are saved to {cron_module.output_dir()}")
@@ -2332,6 +2332,7 @@ def build_parser() -> argparse.ArgumentParser:
     cron_add = cron_sub.add_parser("add", help="add a job: <schedule> <prompt>")
     cron_add.add_argument("schedule", help="interval ('30m', 'every 2h', '1d') or daily time ('09:00')")
     cron_add.add_argument("prompt", nargs="?", help="what the agent should do")
+    cron_add.add_argument("--timezone", default="", help="IANA timezone, e.g. Asia/Jakarta; default host local")
     cron_add.add_argument("--model", default="", help="per-job model ID on the configured provider; does not change global config")
     cron_add.add_argument("--profile", choices=("safe", "workspace", "full"), default="", help="per-job tool profile")
     cron_add.add_argument("--skill", dest="skills", action="append", help="attach a skill; repeat up to five times")
@@ -2541,6 +2542,7 @@ def main(argv: list[str] | None = None) -> int:
             workdir=getattr(namespace, "workdir", ""), timeout=getattr(namespace, "timeout", 900),
             model=getattr(namespace, "model", ""), profile=getattr(namespace, "profile", ""),
             skills=getattr(namespace, "skills", None), context_from=getattr(namespace, "context_from", None),
+            timezone=getattr(namespace, "timezone", ""),
         )
     if command == "toolsearch":
         return cmd_toolsearch(getattr(namespace, "action", None) or "status")

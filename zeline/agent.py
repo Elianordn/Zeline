@@ -25,6 +25,7 @@ from zeline.tools import ToolExecutor
 from zeline import project_rules
 from zeline import tool_protocol
 from zeline import usage_stats
+from zeline.run_budget import RunBudget, BudgetExceeded
 
 
 class ZelineError(RuntimeError):
@@ -544,6 +545,9 @@ class Zeline:
                     if self._cancelled():
                         raise _TurnCancelled()
                     request_payload = copy.deepcopy(payload)
+                    budget = getattr(self, "_run_budget", None)
+                    if budget is not None:
+                        budget.consume("provider_requests")
                     response = self._wait_io(
                         lambda: requests.post(endpoint, headers=headers, json=request_payload,
                                               timeout=180, stream=stream),
@@ -914,6 +918,7 @@ class Zeline:
         take_steer: Callable[[], str | None] | None = None,
         on_narration: Callable[[str], None] | None = None,
         on_stream_delta: Callable[[str], None] | None = None,
+        on_checkpoint: Callable[[list[dict[str, Any]]], None] | None = None,
     ) -> str:
         text = user_input.strip()
         if not text:
@@ -967,7 +972,16 @@ class Zeline:
             telemetry = TurnTelemetry(self.identity)
         self.executor._skill_telemetry = telemetry
         turn_outcome = "unknown"
+        self._on_checkpoint = on_checkpoint
+        previous_budget = getattr(self.executor, "_run_budget", None)
+        self._run_budget = getattr(self, "_shared_budget", None)
         try:
+            if self._run_budget is None:
+                self._run_budget = RunBudget(
+                    getattr(config, "MAX_PROVIDER_REQUESTS_PER_TURN", 0),
+                    getattr(config, "MAX_TOOL_CALLS_PER_TURN", 0))
+            self.executor._run_budget = self._run_budget
+            self._checkpoint()
             for skill_name, loaded in loaded_skills:
                 self._observe_loaded_skill(skill_name, loaded)
             answer = self._run_turn(
@@ -981,6 +995,10 @@ class Zeline:
             )
             turn_outcome = "cancelled" if answer == CANCELLED_REPLY else "completed" if answer.strip() else "unknown"
             return answer
+        except BudgetExceeded as exc:
+            self._drop_incomplete_tail()
+            self._trim_history()
+            return f"ERROR: execution budget exhausted: {exc}. Completed actions remain; inspect their results before retrying."
         except _TurnCancelled:
             turn_outcome = "cancelled"
             # /stop di tengah jalan: rapikan ekor tool-call yang belum lengkap
@@ -989,6 +1007,9 @@ class Zeline:
             self._trim_history()
             return CANCELLED_REPLY
         finally:
+            self.executor._run_budget = previous_budget
+            self._run_budget = None
+            self._on_checkpoint = None
             self.executor._skill_telemetry = None
             if telemetry is not None:
                 with contextlib.suppress(Exception):
@@ -998,6 +1019,12 @@ class Zeline:
             self.executor._interrupt_reason = None
             self._turn_skill_context = ""
             self._turn_memory_context = ""
+
+    def _checkpoint(self, extra: list[dict[str, Any]] | None = None) -> None:
+        """Snapshot before dispatch and after each serial result, before UI callbacks."""
+        callback = getattr(self, "_on_checkpoint", None)
+        if callback is not None:
+            callback([*self.messages, *(extra or [])])
 
     def _run_turn(
         self,
@@ -1076,6 +1103,8 @@ class Zeline:
                     "tool_calls": tool_calls,
                 }
             )
+            # A failed pre-dispatch checkpoint stops the batch before any tool runs.
+            self._checkpoint()
             # Parse setiap tool call sekali (nama + argumen) dengan urutan dijaga.
             parsed_calls: list[tuple[dict[str, Any], str, dict[str, Any]]] = []
             for tool_call in tool_calls:
@@ -1106,6 +1135,10 @@ class Zeline:
             if run_parallel:
                 with ThreadPoolExecutor(max_workers=min(len(parsed_calls), 5)) as pool:
                     results = list(pool.map(lambda ca: self.executor.run(ca[1], ca[2]), parsed_calls))
+                self._checkpoint([
+                    {"role": "tool", "tool_call_id": str(call.get("id", "")), "content": str(result)}
+                    for (call, _name, _args), result in zip(parsed_calls, results)
+                ])
             else:
                 # Serial: cek pembatalan SEBELUM tiap tool, jadi /stop tidak
                 # perlu menunggu seluruh rangkaian tool selesai.
@@ -1114,6 +1147,10 @@ class Zeline:
                     if should_stop and should_stop():
                         break
                     results.append(self.executor.run(name, args))
+                    self._checkpoint([
+                        {"role": "tool", "tool_call_id": str(call.get("id", "")), "content": str(result)}
+                        for (call, _name, _args), result in zip(parsed_calls, results)
+                    ])
 
             if should_stop and should_stop():
                 # Preserve completed side effects before filling cancelled tool

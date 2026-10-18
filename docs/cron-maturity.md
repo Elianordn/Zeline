@@ -105,3 +105,30 @@ are shipped with the development bundle. An independent reviewer verdict is not
 available. No production approval, installation, live migration, restart,
 commit, push or PR is implied. Fail-closed policy hooks, OS isolation, semantic
 memory/privacy purge and GEPA remain separate work.
+
+## Follow-up: explicit timezones and stale-worker protection
+
+Use an IANA timezone when the operator's clock differs from the server:
+
+```bash
+zeline cron add '09:00' 'Write the daily report.' --timezone Asia/Jakarta
+```
+
+The native `schedule_task` tool accepts the same `timezone` field. The zone is
+persisted per job and used for daily scheduling, resume, and displayed timestamps.
+Omitting it preserves the host-local behavior of existing jobs. Fixed intervals
+remain elapsed durations: `1d` means 24 hours, not the next local calendar day.
+Windows installs include `tzdata`; on minimal POSIX hosts without an IANA database,
+install system timezone data or the Python `tzdata` package. Invalid or unavailable
+zones fail before job creation. No fallback silently changes the requested zone.
+
+For explicit zones, a nonexistent daily time during a spring-forward transition
+is skipped. An ambiguous fall-back time fires on its first occurrence only, once
+per local calendar day. Five-field cron expressions are not supported by this
+parser; use intervals or daily times.
+
+Completion and overlap-skip metadata writes now check the immutable generation
+of the scheduled job. Deleting a running job and creating another with its old
+ID cannot attach the old result, counters, or next-run time to the replacement.
+This fence protects metadata; deleting a job does not revoke an already-running
+external action or guarantee that an in-flight delivery is cancelled.

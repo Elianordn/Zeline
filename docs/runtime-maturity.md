@@ -111,3 +111,91 @@ forget across archives/backups, GEPA/held-out optimization and optional OS execu
 backends remain separately testable follow-ups. A generic plugin callback is not an
 execution sandbox. Changes to live security policy and deployment require
 explicit operator approval.
+
+## Follow-up: atomic completed-turn persistence
+
+`SessionPersistence.save_turn` commits the active conversation window and both
+archive messages in a single SQLite transaction. An archive insertion error rolls
+back the window and any partial archive inserts. The existing `save` and
+`append_turn` APIs remain available to other callers.
+
+SessionStore uses the transactional method for completed turns. A commit failure
+preserves the in-memory answer, adds a visible warning to non-cancelled replies,
+and records a redacted `persistence_error` in session status and the application
+log. Successful later persistence clears that diagnostic. Exception messages,
+identities and conversation contents are not included in the warning/log.
+
+A later success saves the current history window but does not backfill missing
+archive rows from a previous failed turn. This remains completed-turn persistence,
+not recovery of an interrupted tool sequence, exactly-once external execution,
+or a fix for every legacy best-effort read/archive API.
+
+## Follow-up: interrupted foreground turn checkpoints
+
+SessionStore now supplies a checkpoint callback to its agent. The agent records
+its user input before a provider request, its tool-call batch before dispatch,
+and each serial tool result immediately after execution, before UI result
+callbacks. Parallel read-only batches are recorded once the batch returns.
+Direct Zeline/one-shot CLI callers without this callback keep their existing
+behavior; durable delegation has its separate job store.
+
+Snapshots live in a separate `turn_checkpoints` SQLite table, keyed by hashed
+identity and bounded with the same history-window limits as session persistence.
+The last committed conversation and archive are not overwritten by partial work.
+A completed turn atomically writes its window/archive and deletes its checkpoint.
+A failed final commit retains the checkpoint. Explicit history save/import and
+session reset clear stale pending state for that identity.
+
+On restart, the interrupted snapshot takes precedence for that identity. Tool
+protocol repair preserves completed results and labels missing results UNKNOWN:
+an external side effect can occur before the process records its result. A
+recovery note tells the next turn to inspect actual state before retrying a
+mutation. Restoring the session never starts a provider call or replays tools.
+It waits for the next user message. There is no exactly-once guarantee, automatic
+resumption, or reconstruction of an interrupted stream. If a tool finishes but
+its checkpoint cannot be saved, the last durable result remains uncertain.
+
+Checkpoint write failures stop execution before further tool dispatch; completed
+side effects are not rolled back. Errors/logs contain redacted diagnostics.
+Unrestorable saved state refuses session construction instead of silently
+starting an empty conversation. Disk failures still require operator recovery.
+No cross-process ownership lease has been added to foreground sessions: run one
+SessionStore owner per identity. This does not turn session snapshots into a
+multi-process distributed workflow engine.
+
+Verification includes real subprocess exit during a second mutating fixture,
+identity isolation, pre-dispatch and post-effect save failures, atomic completion,
+retained snapshots on final-commit failure, explicit reset/import, corrupt-state
+preservation, and parallel read-result persistence before UI delivery.
+
+## Shared foreground dispatch limits
+
+Configure `agent.max_provider_requests_per_turn` and
+`agent.max_tool_calls_per_turn` with nonnegative integer limits (maximum 100000).
+Zero, the backward-compatible default, disables that particular limit. For
+example, use 30 provider attempts and 100 tool calls for a bounded interactive
+workload. Invalid limits stop the turn before contacting a provider.
+
+A foreground turn shares one thread-safe counter with its synchronous children
+and optional reviewer. Each provider HTTP attempt reserves its allowance before
+network dispatch, including retries, fallback models, and streaming fallback.
+Each ToolExecutor call also reserves before observer or native/MCP dispatch.
+Concurrent children cannot each receive a fresh allowance. The next independent
+foreground turn starts fresh. Exhaustion returns an explicit error and prevents
+further dispatch; it does not roll back completed effects or cancel an external
+request already in flight. Existing wall-clock/iteration limits still apply.
+
+These are request/call limits, not a dollar cap or token quota. Background durable
+jobs, separate cron runs and later reflection passes are independent runs, not
+part of the original foreground turn's shared counters. There is no global
+account-wide allowance or recovery of counters across restarts in this slice.
+
+## Verifier outcomes
+
+A synchronous reviewer must begin with `VERDICT: ok` or `VERDICT: problems`.
+Problems produce an error envelope while preserving all worker evidence. A
+missing/unrecognized verdict is explicitly inconclusive and is not accepted as
+completion. Child error/cancel responses are no longer counted as successful
+worker tasks merely because their Python call returned without raising.
+Verification is still optional and model-based: an `ok` verdict is not a
+substitute for deterministic application tests or independent evidence.

@@ -47,14 +47,12 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from zeline import config
 from zeline import delivery
 
-# datetime is used WITHOUT a timezone throughout, deliberately: "09:00" from an
-# operator means 09:00 where they are. Converting to UTC would silently move
-# every daily job by the timezone offset, so the DTZ lint findings in this module
-# are accepted rather than "fixed".
+# Legacy jobs retain host-local scheduling; explicit IANA zones travel with jobs.
 
 # A job that outruns this is abandoned, so one wedged job cannot hold the
 # scheduler forever. Generous, because a real agent turn can legitimately take
@@ -76,11 +74,13 @@ def enabled() -> bool:
     return bool(getattr(config, "CRON", True))
 
 
-def format_time(moment: float) -> str:
+def format_time(moment: float, timezone: str = "") -> str:
     """Render a timestamp the way the operator will read it: their local clock."""
     if not moment:
         return "never"
-    return datetime.fromtimestamp(moment).strftime("%Y-%m-%d %H:%M")
+    zone = _timezone(timezone)
+    stamp = datetime.fromtimestamp(moment, zone).strftime("%Y-%m-%d %H:%M")
+    return f"{stamp} {timezone}" if timezone else stamp
 
 
 def describe_next_run(job: Job) -> str:
@@ -97,7 +97,7 @@ def describe_next_run(job: Job) -> str:
         return f"on the next tick (within {int(TICK_SECONDS)}s)"
     if job.next_run <= time.time():
         return "due now"
-    return format_time(job.next_run)
+    return format_time(job.next_run, job.timezone)
 
 
 def cron_dir() -> Path:
@@ -139,6 +139,18 @@ _UNIT_SECONDS = {
 }
 
 
+def _timezone(name: str) -> ZoneInfo | None:
+    if not isinstance(name, str):
+        raise CronError("timezone must be an IANA name such as Asia/Jakarta")
+    if not name:
+        return None
+    try:
+        return ZoneInfo(name)
+    except (ValueError, ZoneInfoNotFoundError) as exc:
+        raise CronError("unknown timezone or missing timezone data; use an IANA name "
+                        "such as Asia/Jakarta and install tzdata if needed") from exc
+
+
 @dataclass(frozen=True)
 class Schedule:
     """A parsed schedule. Either a fixed interval or a daily wall-clock time."""
@@ -147,6 +159,7 @@ class Schedule:
     seconds: int = 0
     hour: int = -1
     minute: int = -1
+    timezone: str = ""
 
     @property
     def is_daily(self) -> bool:
@@ -154,7 +167,7 @@ class Schedule:
 
     def describe(self) -> str:
         if self.is_daily:
-            return f"daily at {self.hour:02d}:{self.minute:02d}"
+            return f"daily at {self.hour:02d}:{self.minute:02d}" + (f" {self.timezone}" if self.timezone else "")
         if self.seconds % 86400 == 0:
             return f"every {self.seconds // 86400}d"
         if self.seconds % 3600 == 0:
@@ -164,15 +177,31 @@ class Schedule:
     def next_after(self, moment: float) -> float:
         if not self.is_daily:
             return moment + self.seconds
-        current = datetime.fromtimestamp(moment)
-        target = current.replace(hour=self.hour, minute=self.minute, second=0, microsecond=0)
-        if target <= current:
-            target += timedelta(days=1)
-        return target.timestamp()
+        zone = _timezone(self.timezone)
+        current = datetime.fromtimestamp(moment, zone)
+        if zone is None:
+            target = current.replace(hour=self.hour, minute=self.minute, second=0, microsecond=0)
+            if target <= current:
+                target += timedelta(days=1)
+            return target.timestamp()
+        # One run per local calendar day: use the first fold on fall-back days,
+        # skip nonexistent spring-forward times rather than silently shifting them.
+        day = current.date()
+        for offset in range(370):
+            target = datetime.combine(day + timedelta(days=offset), datetime.min.time()).replace(
+                hour=self.hour, minute=self.minute, tzinfo=zone, fold=0)
+            stamp = target.timestamp()
+            roundtrip = datetime.fromtimestamp(stamp, zone)
+            if roundtrip.replace(tzinfo=None) != target.replace(tzinfo=None):
+                continue
+            if stamp > moment:
+                return stamp
+        raise CronError("no valid daily occurrence found within one year")
 
 
-def parse_schedule(text: str) -> Schedule:
+def parse_schedule(text: str, timezone: str = "") -> Schedule:
     """Accept the shapes people actually type. Raise CronError otherwise."""
+    _timezone(timezone)
     cleaned = " ".join((text or "").strip().split())
     if not cleaned:
         raise CronError("a schedule is required, for example '30m', 'every 2h', or '09:00'.")
@@ -182,7 +211,7 @@ def parse_schedule(text: str) -> Schedule:
         hour, minute = int(match.group(1)), int(match.group(2))
         if not (0 <= hour <= 23 and 0 <= minute <= 59):
             raise CronError(f"'{cleaned}' is not a valid time of day (use 00:00 to 23:59).")
-        return Schedule(raw=cleaned, hour=hour, minute=minute)
+        return Schedule(raw=cleaned, hour=hour, minute=minute, timezone=timezone)
 
     match = _DURATION.match(cleaned)
     if match:
@@ -192,7 +221,7 @@ def parse_schedule(text: str) -> Schedule:
             # Below a minute the tick loop cannot honour it anyway, and a job
             # firing every few seconds would run the agent continuously.
             raise CronError("the shortest supported interval is 1 minute.")
-        return Schedule(raw=cleaned, seconds=seconds)
+        return Schedule(raw=cleaned, seconds=seconds, timezone=timezone)
 
     raise CronError(
         f"could not understand the schedule '{cleaned}'. Use an interval "
@@ -230,13 +259,15 @@ class Job:
     generation: str = ""
     last_output: str = ""
     last_output_sha256: str = ""
+    timezone: str = ""
 
     def parsed(self) -> Schedule:
-        return parse_schedule(self.schedule)
+        return parse_schedule(self.schedule, self.timezone)
 
     def options_summary(self) -> str:
         values = {
             "mode": "script-only" if self.no_agent else "agent",
+            "timezone": self.timezone or "(host local)",
             "script": self.script or "(none)", "workdir": self.workdir or "(default)",
             "script timeout": f"{self.timeout:g}s", "model": self.model or "(provider default)",
             "profile": self.profile or "(CLI default)", "skills": ", ".join(self.skills) or "(none)",
@@ -386,8 +417,8 @@ def _new_id(existing: list[Job]) -> str:
 def add_job(schedule: str, prompt: str = "", deliver: str = "local", *,
             script: str = "", no_agent: bool = False, workdir: str = "",
             timeout: float = DEFAULT_JOB_TIMEOUT, model: str = "", profile: str = "",
-            skills: list[str] | None = None, context_from: list[str] | None = None) -> Job:
-    parsed = parse_schedule(schedule)   # validate before writing anything
+            skills: list[str] | None = None, context_from: list[str] | None = None, timezone: str = "") -> Job:
+    parsed = parse_schedule(schedule, timezone)   # validate before writing anything
     prompt = (prompt or "").strip()
     if not prompt and not no_agent:
         raise CronError("a job needs a prompt — what should the agent actually do?")
@@ -437,7 +468,7 @@ def add_job(schedule: str, prompt: str = "", deliver: str = "local", *,
             generations[source_id] = source.generation or f"legacy:{source.created_at}"
         job = Job(
             id=_new_id(jobs),
-            schedule=parsed.raw,
+            schedule=parsed.raw, timezone=timezone,
             prompt=prompt,
             deliver=(deliver or "local").strip() or "local",
             script=script, no_agent=no_agent, workdir=workdir, timeout=timeout, model=model, profile=profile, skills=list(skills or []),
@@ -487,7 +518,11 @@ def run_now(job_id: str) -> bool:
     return False
 
 
-def _record_run(job_id: str, *, status: str, when: float, next_run: float, output_path: str = "") -> None:
+def _generation(job: Job) -> str:
+    return job.generation or f"legacy:{job.created_at}"
+
+
+def _record_run(job_id: str, *, status: str, when: float, next_run: float, output_path: str = "", expected_generation: str | None = None) -> None:
     # Held across the read AND the write: two jobs finishing together would
     # otherwise both read the old file and the second write would drop the first
     # one's result.
@@ -495,6 +530,8 @@ def _record_run(job_id: str, *, status: str, when: float, next_run: float, outpu
         jobs = _read_jobs()
         for job in jobs:
             if job.id == job_id:
+                if expected_generation is not None and _generation(job) != expected_generation:
+                    return
                 job.last_run = when
                 job.last_output = output_path
                 job.last_output_sha256 = ""
@@ -517,7 +554,7 @@ def _record_run(job_id: str, *, status: str, when: float, next_run: float, outpu
                 return
 
 
-def _record_skip(job_id: str, *, next_run: float) -> None:
+def _record_skip(job_id: str, *, next_run: float, expected_generation: str | None = None) -> None:
     """Note that a tick was skipped because the previous run was still going.
 
     Deliberately does NOT touch last_run/last_status/runs: the run in progress
@@ -528,6 +565,8 @@ def _record_skip(job_id: str, *, next_run: float) -> None:
         jobs = _read_jobs()
         for job in jobs:
             if job.id == job_id:
+                if expected_generation is not None and _generation(job) != expected_generation:
+                    return
                 job.skips += 1
                 job.next_run = next_run
                 _write_jobs(jobs)
@@ -810,7 +849,8 @@ class Scheduler:
                 if job.id in self._running:
                     # Skipped, not queued: a job that cannot keep up with its own
                     # schedule should run less often, not accumulate copies.
-                    _record_skip(job.id, next_run=job.parsed().next_after(moment))
+                    _record_skip(job.id, next_run=job.parsed().next_after(moment),
+                                 expected_generation=_generation(job))
                     continue
                 self._running.add(job.id)
             started.append(job.id)
@@ -866,7 +906,8 @@ class Scheduler:
                 next_run = time.time() + 3600
             try:
                 _record_run(job.id, status=status, when=moment, next_run=next_run,
-                            output_path=result_path if status.startswith("ok") else "")
+                            output_path=result_path if status.startswith("ok") else "",
+                            expected_generation=_generation(job))
             except Exception as exc:
                 self.last_error = f"cron {job.id} metadata: {exc.__class__.__name__}: {exc}"[:500]
             finally:

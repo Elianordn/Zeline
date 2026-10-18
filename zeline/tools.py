@@ -1153,7 +1153,7 @@ def _schedule_task(
     job_id: str = "",
     deliver: str = "",
     script: str = "", no_agent: bool = False, workdir: str = "", timeout: float = 900,
-    model: str = "", profile: str = "", skills: list[str] | None = None, context_from: list[str] | None = None,
+    model: str = "", profile: str = "", skills: list[str] | None = None, context_from: list[str] | None = None, timezone: str = "",
 ) -> str:
     """Let the agent manage its own scheduled jobs.
 
@@ -1189,7 +1189,7 @@ def _schedule_task(
             job.options_summary(),
         ]
         if job.last_status:
-            stamp = f"{cron.format_time(job.last_run)} " if job.last_run else ""
+            stamp = f"{cron.format_time(job.last_run, job.timezone)} " if job.last_run else ""
             lines.append(f"  last run: {stamp}{job.last_status[:160]}")
         if job.runs or job.failures or job.skips:
             lines.append(f"  runs {job.runs}, failures {job.failures}, skipped {job.skips}")
@@ -1222,7 +1222,7 @@ def _schedule_task(
         try:
             job = cron.add_job(schedule, prompt, target, script=script, no_agent=no_agent,
                                workdir=workdir, timeout=timeout, model=model, profile=profile,
-                               skills=skills, context_from=context_from)
+                               skills=skills, context_from=context_from, timezone=timezone)
         except cron.CronError as exc:
             return f"ERROR schedule_task: {exc}"
         where = (
@@ -1900,11 +1900,12 @@ TOOL_DEFS: list[ToolDef] = [
                     "enum": ["add", "list", "show", "pause", "resume", "run", "remove"],
                     "description": "What to do. 'list' first if you need job ids.",
                 },
+                "timezone": {"type": "string", "description": "IANA timezone such as Asia/Jakarta. Empty uses host local time; never assume host timezone matches the user."},
                 "schedule": {
                     "type": "string",
                     "description": (
                         "For 'add': an interval ('30m', 'every 2h', '1d') or a daily "
-                        "wall-clock time in the user's own timezone ('09:00'). Minimum "
+                        "wall-clock time ('09:00'); set timezone explicitly for the user. Minimum "
                         "interval 1 minute."
                     ),
                 },
@@ -2534,10 +2535,10 @@ class ToolExecutor:
             "git": lambda action, path="", message="", ref="", staged=False, limit=10: _git(
                 action, self.workspace, path=path, message=message, ref=ref, staged=staged, limit=limit
             ),
-            "schedule_task": lambda action, schedule="", prompt="", job_id="", deliver="", script="", no_agent=False, workdir="", timeout=900, model="", profile="", skills=None, context_from=None: _schedule_task(
+            "schedule_task": lambda action, schedule="", prompt="", job_id="", deliver="", script="", no_agent=False, workdir="", timeout=900, model="", profile="", skills=None, context_from=None, timezone="": _schedule_task(
                 action, self.identity, schedule=schedule, prompt=prompt, job_id=job_id, deliver=deliver,
                 script=script, no_agent=no_agent, workdir=workdir, timeout=timeout,
-                model=model, profile=profile, skills=skills, context_from=context_from
+                model=model, profile=profile, skills=skills, context_from=context_from, timezone=timezone
             ),
             "http_request": lambda method, url, headers="", body="": _http_request(method, url, headers, body),
             "system_env": lambda: _system_env(),
@@ -2808,6 +2809,7 @@ class ToolExecutor:
             system_extra=system_extra,
             depth=self.depth + 1,
         )
+        sub._shared_budget = getattr(self, "_run_budget", None)
         return sub.send(brief, should_stop=getattr(self, "_should_stop", None))
 
     def _delegate_task(
@@ -2981,6 +2983,9 @@ class ToolExecutor:
         """
         if self._cancelled():
             return "CANCELLED: turn stopped before tool dispatch."
+        budget = getattr(self, "_run_budget", None)
+        if budget is not None:
+            budget.consume("tool_calls")
         if self.plugins is None:
             result = self._execute(name, args)
             self._audit(name, args, result)
