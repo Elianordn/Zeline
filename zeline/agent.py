@@ -1007,6 +1007,12 @@ class Zeline:
             self._drop_incomplete_tail()
             self._trim_history()
             return CANCELLED_REPLY
+        except Exception:
+            # Infrastructure/UI failures must abort dispatch without leaving
+            # unanswered tool-call IDs or discarding completed side effects.
+            # Do not checkpoint here: that backend may be the original failure.
+            self._drop_incomplete_tail()
+            raise
         finally:
             self.executor._run_budget = previous_budget
             self._run_budget = None
@@ -1133,49 +1139,74 @@ class Zeline:
             if self._cancelled():
                 raise _TurnCancelled()
 
+            recorded_results: list[dict[str, Any]] = []
             if run_parallel:
                 with ThreadPoolExecutor(max_workers=min(len(parsed_calls), 5)) as pool:
-                    results = list(pool.map(lambda ca: self.executor.run(ca[1], ca[2]), parsed_calls))
-                self._checkpoint([
+                    futures = [pool.submit(self.executor.run, name, args)
+                               for _call, name, args in parsed_calls]
+                    completed = []
+                    failure = None
+                    for (call, _name, _args), future in zip(parsed_calls, futures):
+                        try:
+                            completed.append((call, future.result()))
+                        except Exception as exc:
+                            if failure is None:
+                                failure = exc
+                    if failure is not None:
+                        # Drain all futures: a later submission may have finished
+                        # even if an earlier one exhausted the shared budget.
+                        self.messages.extend(
+                            {"role": "tool", "tool_call_id": str(call.get("id", "")),
+                             "content": str(result)} for call, result in completed
+                        )
+                        self._checkpoint()
+                        raise failure
+                    results = [result for _call, result in completed]
+                recorded_results = [
                     {"role": "tool", "tool_call_id": str(call.get("id", "")), "content": str(result)}
                     for (call, _name, _args), result in zip(parsed_calls, results)
-                ])
+                ]
+                # Persist evidence before the checkpoint callback can fail.
+                self.messages.extend(recorded_results)
+                self._checkpoint()
             else:
                 # Serial: cek pembatalan SEBELUM tiap tool, jadi /stop tidak
                 # perlu menunggu seluruh rangkaian tool selesai.
                 results = []
                 try:
-                    for _tc, name, args in parsed_calls:
+                    for tool_call, name, args in parsed_calls:
                         if should_stop and should_stop():
                             break
-                        results.append(self.executor.run(name, args))
-                        self._checkpoint([
-                            {"role": "tool", "tool_call_id": str(call.get("id", "")), "content": str(result)}
-                            for (call, _name, _args), result in zip(parsed_calls, results)
-                        ])
-                except BudgetExceeded:
-                    # A later call can exhaust the shared budget after earlier
-                    # calls already performed side effects. Commit those real
-                    # results before the outer handler repairs only unanswered
-                    # call IDs; otherwise completed work is rewritten as UNKNOWN.
-                    for (tool_call, completed_name, completed_args), result in zip(parsed_calls, results):
-                        if on_tool_result:
-                            on_tool_result(completed_name, completed_args, result)
-                        self.messages.append({
+                        result = self.executor.run(name, args)
+                        results.append(result)
+                        recorded = {
                             "role": "tool",
                             "tool_call_id": str(tool_call.get("id", "")),
                             "content": str(result),
-                        })
+                        }
+                        recorded_results.append(recorded)
+                        # Keep the evidence in the live history before the
+                        # checkpoint callback can fail.
+                        self.messages.append(recorded)
+                        self._checkpoint()
+                except BudgetExceeded:
+                    # A later call can exhaust the shared budget after earlier
+                    # calls already performed side effects. Those results are
+                    # already recorded; checkpoint them before callbacks.
                     self._checkpoint()
+                    for (_tool_call, completed_name, completed_args), result in zip(parsed_calls, results):
+                        if on_tool_result:
+                            on_tool_result(completed_name, completed_args, result)
                     raise
 
             if should_stop and should_stop():
-                # Preserve completed side effects before filling cancelled tool
-                # IDs. A later turn must not repeat already executed writes.
-                for (tool_call, _name, _args), result in zip(parsed_calls, results):
-                    self.messages.append({"role": "tool", "tool_call_id": str(tool_call.get("id", "")),
-                                          "content": str(result)})
+                # Completed evidence was recorded before this cancellation
+                # check; a later turn must not repeat those side effects.
                 raise _TurnCancelled()
+
+            # Completed evidence was recorded before skill loading, steering or
+            # UI callbacks can raise. Those observers must not turn real results
+            # into UNKNOWN during final session persistence.
 
             # Domain-agnostic escalation: the initial prompt may only contain a
             # URL and never mention Cloudflare/CAPTCHA. If a real tool result
@@ -1206,19 +1237,13 @@ class Zeline:
                     )
 
             steer_text = take_steer() if take_steer else None
-            for (tool_call, name, args), result in zip(parsed_calls, results):
+            for recorded, (tool_call, name, args), result in zip(recorded_results, parsed_calls, results):
                 if on_tool_result:
                     on_tool_result(name, args, result)
                 if steer_text:
                     result += f"\n\n[User steering — follow this guidance now: {steer_text}]"
                     steer_text = None  # sertakan sekali saja, di tool result pertama
-                self.messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": str(tool_call.get("id", "")),
-                        "content": result,
-                    }
-                )
+                    recorded["content"] = result
 
             # Anti-loop: kalau SEMUA tool di ronde ini balik ERROR, hitung sebagai
             # kegagalan beruntun. Setelah beberapa ronde gagal berturut (mis.

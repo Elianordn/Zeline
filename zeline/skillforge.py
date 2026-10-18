@@ -470,11 +470,12 @@ class ForgeStore:
         return self.get(proposal_id)
 
     def apply(self, proposal_id: str) -> dict[str, Any]:
-        """Apply only an unchanged, tested, approved draft to a PRIVATE override.
+        """Apply only an unchanged, tested, approved draft to a PRIVATE override."""
+        with self._pins_lock():
+            return self._apply_locked(proposal_id)
 
-        Backups are mandatory here (unlike best-effort ordinary edits). Packaged
-        skills, safety files and integrity locks are never overwritten.
-        """
+    def _apply_locked(self, proposal_id: str) -> dict[str, Any]:
+        """Apply an approved proposal while holding the shared mutation lock."""
         from zeline import skills
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -586,10 +587,10 @@ class ForgeStore:
 
     def pin(self, name: str) -> str:
         _name(name)
-        entry, _scope = self._source(name)
-        if entry is None:
-            raise ValueError(f"Skill '{name}' not found")
         with self._pins_lock():
+            entry, _scope = self._source(name)
+            if entry is None:
+                raise ValueError(f"Skill '{name}' not found")
             pins = self._load_pins()
             pins.add(name)
             self._save_pins(pins)
@@ -616,6 +617,11 @@ class ForgeStore:
         return d
 
     def archive(self, name: str) -> str:
+        """Move a private skill while serializing against pin and deletion."""
+        with self._pins_lock():
+            return self._archive_locked(name)
+
+    def _archive_locked(self, name: str) -> str:
         """Move a private skill to the archive directory."""
         _name(name)
         if self.is_pinned(name):
@@ -638,6 +644,11 @@ class ForgeStore:
         return f"Archived '{name}'. Use `zeline skillforge restore {name}` to bring it back."
 
     def restore(self, name: str) -> str:
+        """Restore while serializing destination checks and the archive move."""
+        with self._pins_lock():
+            return self._restore_locked(name)
+
+    def _restore_locked(self, name: str) -> str:
         """Restore an archived skill back to private scope."""
         _name(name)
         from zeline import skills
@@ -654,8 +665,9 @@ class ForgeStore:
             shutil.move(str(source), str(dest))
         elif source.is_dir():
             # Flat skills are archived in a directory wrapper.
-            files = [child for child in source.iterdir() if child.is_file()]
-            if len(files) != 1 or files[0].name != f"{name}.md":
+            children = list(source.iterdir())
+            files = [child for child in children if child.is_file()]
+            if len(children) != 1 or len(files) != 1 or files[0].name != f"{name}.md":
                 raise ValueError(f"Archived skill '{name}' has an invalid layout")
             shutil.move(str(files[0]), str(flat_dest))
             source.rmdir()

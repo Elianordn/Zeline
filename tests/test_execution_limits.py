@@ -72,6 +72,121 @@ class ExecutionLimitTests(unittest.TestCase):
         }
         self.assertIn("exit=0", tool_results["0"])
         self.assertIn("UNKNOWN", tool_results["1"])
+        persistence_module = importlib.import_module("zeline.session_store")
+        persistence = persistence_module.SessionPersistence(Path(self.tmp.name) / "budget-session.db")
+        persistence.save("budget-audit", self.agent.export_history(), title="budget audit")
+        rebuilt = self.module.Zeline(workspace=self.tmp.name, tool_profile="full")
+        restored_history, _title = persistence.load("budget-audit")
+        rebuilt.load_history(restored_history)
+        restored = {m["tool_call_id"]: m["content"] for m in rebuilt.messages if m.get("role") == "tool"}
+        self.assertEqual(restored, tool_results)
+
+    def test_successful_tool_result_survives_ui_callback_failure(self):
+        def callback(*_args):
+            raise RuntimeError("UI callback failed")
+        with patch.object(self.agent, "_call_llm", return_value=self.calls("run_shell")), \
+             patch.object(self.agent.executor, "_execute", return_value="completed mutation evidence"):
+            with self.assertRaises(RuntimeError):
+                self.agent.send("fixture", on_tool_result=callback)
+        recorded = [m["content"] for m in self.agent.messages if m.get("role") == "tool"]
+        self.assertIn("completed mutation evidence", recorded)
+
+    def test_budget_result_callback_cannot_erase_completed_evidence(self):
+        self.module.config.MAX_TOOL_CALLS_PER_TURN = 1
+        def callback(*_args):
+            raise RuntimeError("UI callback failed")
+        with patch.object(self.agent, "_call_llm", return_value=self.calls("run_shell", count=2)), \
+             patch.object(self.agent.executor, "_execute", return_value="completed mutation evidence"):
+            with self.assertRaises(RuntimeError):
+                self.agent.send("fixture", on_tool_result=callback)
+        recorded = [m["content"] for m in self.agent.messages if m.get("role") == "tool"]
+        self.assertIn("completed mutation evidence", recorded)
+
+    def test_parallel_evidence_survives_checkpoint_failure(self):
+        def checkpoint(messages):
+            if any(message.get("role") == "tool" for message in messages):
+                raise OSError("checkpoint backend unavailable")
+        with patch.object(self.agent, "_call_llm", return_value=self.calls("runtime_info", count=2)) as provider, \
+             patch.object(self.agent.executor, "run", return_value="parallel checkpoint evidence") as execute:
+            with self.assertRaises(OSError):
+                self.agent.send("fixture", on_checkpoint=checkpoint)
+        self.assertEqual(provider.call_count, 1)
+        self.assertEqual(execute.call_count, 2)
+        recorded = [message["content"] for message in self.agent.messages if message.get("role") == "tool"]
+        exported = [message["content"] for message in self.agent.export_history() if message.get("role") == "tool"]
+        self.assertEqual(recorded, ["parallel checkpoint evidence", "parallel checkpoint evidence"])
+        self.assertEqual(exported, recorded)
+
+    def test_serial_evidence_survives_checkpoint_failure(self):
+        def checkpoint(messages):
+            if any(message.get("role") == "tool" for message in messages):
+                raise OSError("checkpoint backend unavailable")
+        with patch.object(self.agent, "_call_llm", return_value=self.calls("run_shell")) as provider, \
+             patch.object(self.agent.executor, "run", return_value="serial checkpoint evidence") as execute:
+            with self.assertRaises(OSError):
+                self.agent.send("fixture", on_checkpoint=checkpoint)
+        self.assertEqual(provider.call_count, 1)
+        self.assertEqual(execute.call_count, 1)
+        recorded = [message["content"] for message in self.agent.messages if message.get("role") == "tool"]
+        self.assertEqual(recorded, ["serial checkpoint evidence"])
+
+    def test_serial_callback_failure_repairs_unexecuted_calls(self):
+        for failure in ("checkpoint", "result"):
+            with self.subTest(failure=failure):
+                self.agent.messages = self.agent.messages[:1]
+                def checkpoint(messages):
+                    if any(message.get("role") == "tool" for message in messages):
+                        raise OSError("checkpoint backend unavailable")
+                def callback(*_args):
+                    raise OSError("result callback unavailable")
+                kwargs = {"on_checkpoint": checkpoint} if failure == "checkpoint" else {"on_tool_result": callback}
+                # A result callback runs after batching, or in the partial-batch
+                # budget path; exercise that path with one unexecuted call.
+                self.module.config.MAX_TOOL_CALLS_PER_TURN = 1
+                with patch.object(self.agent, "_call_llm", return_value=self.calls("run_shell", count=2)) as provider, \
+                     patch.object(self.agent.executor, "_execute", return_value="completed serial evidence") as execute:
+                    with self.assertRaises(OSError):
+                        self.agent.send("fixture", **kwargs)
+                self.assertEqual(provider.call_count, 1)
+                self.assertEqual(execute.call_count, 1)
+                protocol = importlib.import_module("zeline.tool_protocol")
+                self.assertFalse(protocol.unanswered_call_ids(self.agent.messages))
+                exported = self.agent.export_history()
+                self.assertFalse(protocol.unanswered_call_ids(exported))
+                results = [message for message in exported if message.get("role") == "tool"]
+                self.assertEqual(len(results), 2)
+                self.assertEqual(results[0]["content"], "completed serial evidence")
+                self.assertEqual(results[0]["tool_call_id"], "0")
+                self.assertEqual(results[1]["tool_call_id"], "1")
+                self.assertIn("UNKNOWN", results[1]["content"])
+
+    def test_parallel_tool_budget_preserves_completed_results(self):
+        self.module.config.MAX_TOOL_CALLS_PER_TURN = 1
+        with patch.object(self.agent, "_call_llm", return_value=self.calls("runtime_info", count=2)), \
+             patch.object(self.agent.executor, "_execute", return_value="parallel evidence") as execute:
+            result = self.agent.send("fixture")
+        self.assertEqual(execute.call_count, 1)
+        self.assertIn("budget exhausted", result)
+        recorded = [message["content"] for message in self.agent.messages if message.get("role") == "tool"]
+        self.assertEqual(sum("parallel evidence" in item for item in recorded), 1)
+        self.assertEqual(sum("UNKNOWN" in item for item in recorded), 1)
+
+    def test_parallel_budget_failure_drains_later_successful_future(self):
+        error = self.budget.BudgetExceeded("fixture limit")
+        def run(_name, args):
+            if args["index"] == 0:
+                raise error
+            return "later successful evidence"
+        message = self.calls("runtime_info", count=2)
+        for index, call in enumerate(message["tool_calls"]):
+            call["function"]["arguments"] = json.dumps({"index": index})
+        with patch.object(self.agent, "_call_llm", return_value=message), \
+             patch.object(self.agent.executor, "run", side_effect=run):
+            result = self.agent.send("fixture")
+        self.assertIn("budget exhausted", result)
+        recorded = {m["tool_call_id"]: m["content"] for m in self.agent.messages if m.get("role") == "tool"}
+        self.assertIn("UNKNOWN", recorded["0"])
+        self.assertEqual(recorded["1"], "later successful evidence")
 
     def test_parent_and_parallel_children_share_request_allowance(self):
         self.module.config.MAX_PROVIDER_REQUESTS_PER_TURN = 2

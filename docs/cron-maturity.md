@@ -92,6 +92,27 @@ Malformed/unsupported source bytes are preserved in private checksum-named
 are recovery evidence, not an automatic restore or a live mirror. A metadata
 write failure releases the running slot and sets the scheduler's error diagnostic.
 
+## Execution ownership and recovery
+
+Each running job holds an execution-lifetime OS file lock (POSIX `flock`,
+Windows nonblocking byte-range lock). Ownership does not expire while a slow
+agent is still running. Process exit releases the OS lock; only the exact owner
+token may release the in-process claim. Claim lock files remain on disk so a
+second inode cannot bypass a live lock. Run only updated scheduler binaries
+against this state; older lease-based runners do not participate in this lock.
+
+Before starting a worker, the scheduler re-reads its due snapshot under the jobs
+mutex and rejects removed, replaced, paused, rescheduled or already-completed
+work. Failed thread startup releases both the claim and local busy state. These
+checks prevent overlapping cooperating runners; they do not guarantee exactly-once
+external effects after a process crash.
+
+Recovery backups are staged in unique temporary files, flushed and synced before
+atomic replacement. An abandoned temporary file cannot block the next recovery.
+Agent `ERROR` envelopes are recorded as failed results and cannot supply successful
+`context_from` input; a successful script's literal stdout is not classified as an
+agent failure merely because it begins with `ERROR`.
+
 ## Verification and deployment boundary
 
 Regression coverage includes real Python/bash processes, owned child cleanup,

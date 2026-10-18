@@ -134,8 +134,15 @@ or a fix for every legacy best-effort read/archive API.
 
 SessionStore now supplies a checkpoint callback to its agent. The agent records
 its user input before a provider request, its tool-call batch before dispatch,
-and each serial tool result immediately after execution, before UI result
-callbacks. Parallel read-only batches are recorded once the batch returns.
+and each completed tool result in live history before invoking the checkpoint or
+UI result callbacks. Parallel read-only batches are appended once all submitted
+futures return, before their checkpoint callback runs. If checkpoint storage
+fails, the in-memory evidence remains exportable rather than being discarded.
+If one parallel call exhausts the shared budget, all submitted futures are drained
+and their completed results are preserved by tool-call ID before the error is
+returned. Only calls without recorded results are repaired as UNKNOWN. This also
+covers a later successful future following an earlier failed future; no automatic
+retry is performed.
 Direct Zeline/one-shot CLI callers without this callback keep their existing
 behavior; durable delegation has its separate job store.
 

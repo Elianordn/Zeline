@@ -8,6 +8,7 @@ import multiprocessing
 import os
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -86,6 +87,49 @@ class PinTests(CuratorTestBase):
         # Skill still exists
         self.assertIsNotNone(self.skills._locate_unit("beta"))
 
+    def test_pin_cannot_succeed_during_inflight_delete(self):
+        self._create_private_skill("racing-delete")
+        deleting = threading.Event()
+        release = threading.Event()
+        pin_done = threading.Event()
+        outcomes = []
+        def checkpoint(*_args):
+            deleting.set()
+            release.wait(5)
+        def pin():
+            try:
+                outcomes.append(self.store.pin("racing-delete"))
+            except ValueError as exc:
+                outcomes.append(str(exc))
+            finally:
+                pin_done.set()
+        with mock.patch.object(self.skills, "_checkpoint_skill_tree", side_effect=checkpoint):
+            remover = threading.Thread(target=lambda: self.skills.manage_skill("delete", name="racing-delete"))
+            pinner = threading.Thread(target=pin)
+            remover.start()
+            try:
+                self.assertTrue(deleting.wait(5))
+                pinner.start()
+                self.assertFalse(pin_done.wait(.2), "pin reported success while delete was still in progress")
+            finally:
+                release.set()
+                remover.join(5)
+                if pinner.ident is not None:
+                    pinner.join(5)
+        self.assertTrue(pin_done.is_set())
+        self.assertIn("not found", outcomes[0])
+        self.assertFalse(self.store.is_pinned("racing-delete"))
+
+    def test_delete_does_not_report_success_on_filesystem_failure(self):
+        self._create_private_skill("cannot-delete")
+        def denied(_path, **kwargs):
+            if not kwargs.get("ignore_errors"):
+                raise PermissionError("blocked")
+        with mock.patch.object(self.skills.shutil, "rmtree", side_effect=denied):
+            result = self.skills.manage_skill("delete", name="cannot-delete")
+        self.assertIn("ERROR", result)
+        self.assertTrue((self.skills.PRIVATE_SKILLS_DIR / "cannot-delete").exists())
+
     def test_unpinned_skill_allows_delete(self):
         self._create_private_skill("gamma")
         self.store.pin("gamma")
@@ -160,6 +204,190 @@ class PinTests(CuratorTestBase):
 
 
 class ArchiveTests(CuratorTestBase):
+    def _race_restore_with_author(self, name, flat, action, **kwargs):
+        if flat:
+            (self.skills.PRIVATE_SKILLS_DIR / f"{name}.md").write_text("# Archived evidence\n")
+        else:
+            self._create_private_skill(name, "# Archived evidence\n")
+        self.store.archive(name)
+        moving = threading.Event()
+        release = threading.Event()
+        author_started = threading.Event()
+        author_done = threading.Event()
+        outcomes = []
+        errors = []
+        real_move = self.skillforge.shutil.move
+
+        def move(*args, **kw):
+            moving.set()
+            if not release.wait(5):
+                raise RuntimeError("restore race release timed out")
+            return real_move(*args, **kw)
+
+        def restore():
+            try:
+                outcomes.append(self.store.restore(name))
+            except Exception as exc:
+                errors.append(exc)
+
+        def author():
+            author_started.set()
+            try:
+                outcomes.append(self.skills.manage_skill(action, name=name, **kwargs))
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                author_done.set()
+
+        with mock.patch.object(self.skillforge.shutil, "move", side_effect=move):
+            restorer = threading.Thread(target=restore, daemon=True)
+            writer = threading.Thread(target=author, daemon=True)
+            restorer.start()
+            try:
+                self.assertTrue(moving.wait(5))
+                writer.start()
+                self.assertTrue(author_started.wait(5))
+                self.assertFalse(author_done.wait(.2), "author bypassed in-flight restore lock")
+            finally:
+                release.set()
+                restorer.join(5)
+                if writer.ident is not None:
+                    writer.join(5)
+        self.assertFalse(restorer.is_alive(), "restore deadlocked")
+        self.assertFalse(writer.is_alive(), "author deadlocked")
+        self.assertEqual(errors, [])
+        self.assertEqual(len(outcomes), 2)
+        folder = self.skills.PRIVATE_SKILLS_DIR / name
+        self.assertFalse((folder / name).exists(), "restore nested the archived directory")
+        self.assertFalse((self.skills.PRIVATE_SKILLS_DIR / f"{name}.md").exists())
+        return folder
+
+    def test_patch_and_apply_wait_for_shared_mutation_lock(self):
+        self._create_private_skill("locked-edit", "# Original evidence")
+        failures = []
+        for operation in (
+            lambda: self.skills.manage_skill("patch", name="locked-edit", old_text="Original", new_text="Patched"),
+            lambda: self.store.apply("missing-proposal"),
+        ):
+            started = threading.Event()
+            done = threading.Event()
+            outcomes = []
+
+            def writer():
+                started.set()
+                try:
+                    outcomes.append(operation())
+                except ValueError as exc:
+                    outcomes.append(str(exc))
+                finally:
+                    done.set()
+
+            with self.store._pins_lock():
+                worker = threading.Thread(target=writer, daemon=True)
+                worker.start()
+                self.assertTrue(started.wait(5))
+                blocked = not done.wait(.2)
+            worker.join(5)
+            self.assertFalse(worker.is_alive(), "writer deadlocked")
+            self.assertEqual(len(outcomes), 1)
+            if not blocked:
+                failures.append(outcomes[0])
+        self.assertEqual(failures, [], "writers validated or mutated outside shared lock")
+
+    def test_directory_restore_serializes_with_create(self):
+        folder = self._race_restore_with_author("restore-create", False, "create", content="# New evidence")
+        self.assertIn("New evidence", (folder / "SKILL.md").read_text())
+
+    def test_flat_restore_serializes_with_write_file(self):
+        folder = self._race_restore_with_author("restore-write", True, "write_file",
+                                                file_path="references/proof.md", content="companion evidence")
+        self.assertIn("Archived evidence", (folder / "SKILL.md").read_text())
+        self.assertEqual((folder / "references/proof.md").read_text(), "companion evidence")
+
+    def test_pin_cannot_succeed_while_archive_move_is_in_progress(self):
+        self._create_private_skill("racing-archive")
+        moving = threading.Event()
+        release = threading.Event()
+        pin_done = threading.Event()
+        outcomes = []
+        original_move = self.store.__class__.__module__
+        forge_module = sys.modules[original_move]
+        real_move = forge_module.shutil.move
+        def move(*args, **kwargs):
+            moving.set()
+            release.wait(5)
+            return real_move(*args, **kwargs)
+        def pin():
+            try:
+                outcomes.append(self.store.pin("racing-archive"))
+            except ValueError as exc:
+                outcomes.append(str(exc))
+            finally:
+                pin_done.set()
+        with mock.patch.object(forge_module.shutil, "move", side_effect=move):
+            archiver = threading.Thread(target=lambda: self.store.archive("racing-archive"))
+            pinner = threading.Thread(target=pin)
+            archiver.start()
+            try:
+                self.assertTrue(moving.wait(5))
+                pinner.start()
+                self.assertFalse(pin_done.wait(.2), "pin succeeded during archive")
+            finally:
+                release.set()
+                archiver.join(5)
+                if pinner.ident is not None:
+                    pinner.join(5)
+        self.assertIn("not found", outcomes[0])
+        self.assertFalse(self.store.is_pinned("racing-archive"))
+
+    def test_concurrent_restore_does_not_move_same_archive_twice(self):
+        self._create_private_skill("restore-race")
+        self.store.archive("restore-race")
+        forge_module = sys.modules[self.store.__class__.__module__]
+        real_move = forge_module.shutil.move
+        first_move = threading.Event()
+        second_move = threading.Event()
+        release = threading.Event()
+        outcomes = []
+        def move(*args, **kwargs):
+            if first_move.is_set():
+                second_move.set()
+            first_move.set()
+            release.wait(5)
+            return real_move(*args, **kwargs)
+        def restore():
+            try:
+                outcomes.append(self.store.restore("restore-race"))
+            except (ValueError, OSError) as exc:
+                outcomes.append(str(exc))
+        with mock.patch.object(forge_module.shutil, "move", side_effect=move):
+            first = threading.Thread(target=restore)
+            second = threading.Thread(target=restore)
+            first.start()
+            try:
+                self.assertTrue(first_move.wait(5))
+                second.start()
+                self.assertFalse(second_move.wait(.2), "two restore operations passed the same destination check")
+            finally:
+                release.set()
+                first.join(5)
+                if second.ident is not None:
+                    second.join(5)
+        self.assertEqual(sum(item.startswith("Restored") for item in outcomes), 1)
+        self.assertTrue((self.skills.PRIVATE_SKILLS_DIR / "restore-race" / "SKILL.md").is_file())
+
+    def test_restore_rejects_malformed_flat_wrapper_before_moving_file(self):
+        self.skills._ensure_dirs()
+        flat = self.skills.PRIVATE_SKILLS_DIR / "bad-flat.md"
+        flat.write_text("# Flat skill", encoding="utf-8")
+        self.store.archive("bad-flat")
+        archived = self.store._archive_dir() / "bad-flat"
+        (archived / "unexpected-directory").mkdir()
+        with self.assertRaises((ValueError, OSError)):
+            self.store.restore("bad-flat")
+        self.assertFalse(flat.exists(), "failed restore must not already have moved the skill")
+        self.assertTrue((archived / "bad-flat.md").is_file())
+
     def test_archive_and_restore(self):
         self._create_private_skill("archivable")
         result = self.store.archive("archivable")

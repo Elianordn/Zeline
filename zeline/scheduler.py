@@ -40,6 +40,7 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -355,47 +356,70 @@ class _JobsMutex:
 
 _JOBS_LOCK = _JobsMutex()
 
-# Claim-lease duration: if a claim is older than this, another process may
-# reclaim the job (handles crashed processes that never cleared their claim).
-_CLAIM_LEASE_SECONDS = DEFAULT_JOB_TIMEOUT + 120
+# Lock files are permanent: unlinking a locked inode would let a second process
+# lock a different inode for the same job. The OS releases ownership on death,
+# not after an arbitrary timeout (agent turns are not necessarily time-bounded).
+@dataclass(eq=False)
+class _Claim:
+    job_id: str
+    path: Path
+    stream: Any
+    pid: int
 
 
-def _try_claim(job_id: str, moment: float) -> bool:
-    """Atomically claim a job under the cross-process SQLite mutex.
-
-    Returns True if the claim was acquired; False if another process already
-    holds it. Claims live in the lock database (not jobs.json) so the Job
-    dataclass stays unchanged.
-    """
-    with _JOBS_LOCK as ctx:
-        db = ctx._local.database
-        db.execute(
-            "CREATE TABLE IF NOT EXISTS claims "
-            "(job_id TEXT PRIMARY KEY, claimed_at REAL NOT NULL, pid INTEGER NOT NULL)"
-        )
-        row = db.execute(
-            "SELECT claimed_at FROM claims WHERE job_id = ?", (job_id,)
-        ).fetchone()
-        if row is not None:
-            claimed_at = row[0]
-            if (moment - claimed_at) < _CLAIM_LEASE_SECONDS:
-                return False
-        db.execute(
-            "INSERT OR REPLACE INTO claims (job_id, claimed_at, pid) VALUES (?, ?, ?)",
-            (job_id, moment, os.getpid()),
-        )
-    return True
+_CLAIMS: dict[Path, _Claim] = {}
+_CLAIMS_LOCK = threading.Lock()
 
 
-def _release_claim(job_id: str) -> None:
-    """Clear the claim after execution completes."""
-    with _JOBS_LOCK as ctx:
-        db = ctx._local.database
-        db.execute(
-            "CREATE TABLE IF NOT EXISTS claims "
-            "(job_id TEXT PRIMARY KEY, claimed_at REAL NOT NULL, pid INTEGER NOT NULL)"
-        )
-        db.execute("DELETE FROM claims WHERE job_id = ?", (job_id,))
+def _try_claim(job_id: str, moment: float) -> _Claim | None:
+    """Acquire a nonblocking execution-lifetime lock and return its owner token."""
+    directory = _ensure_dir(cron_dir() / "claims")
+    path = directory / (hashlib.sha256(job_id.encode()).hexdigest() + ".lock")
+    with _CLAIMS_LOCK:
+        if path in _CLAIMS:
+            return None
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+        stream = os.fdopen(fd, "r+b", buffering=0)
+        try:
+            if os.name == "nt":
+                import msvcrt
+                # Windows byte-range locking requires a byte even in a new file.
+                if os.fstat(fd).st_size == 0:
+                    stream.write(b"\0")
+                stream.seek(0)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            stream.close()
+            import errno
+            if exc.errno in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                return None
+            raise
+        except BaseException:
+            stream.close()
+            raise
+        claim = _Claim(job_id, path, stream, os.getpid())
+        _CLAIMS[path] = claim
+        return claim
+
+
+def _release_claim(job_id: str, claim: _Claim | None = None) -> None:
+    """Only the original token can release a claim; stale releases are harmless."""
+    if claim is None or claim.job_id != job_id or claim.pid != os.getpid():
+        return
+    with _CLAIMS_LOCK:
+        if _CLAIMS.get(claim.path) is not claim:
+            return
+        try:
+            if os.name == "nt":
+                import msvcrt
+                claim.stream.seek(0)
+                msvcrt.locking(claim.stream.fileno(), msvcrt.LK_UNLCK, 1)
+        finally:
+            claim.stream.close()
+            del _CLAIMS[claim.path]
 
 
 def _write_jobs(jobs: list[Job]) -> None:
@@ -420,8 +444,8 @@ def _write_jobs(jobs: list[Job]) -> None:
                     if backup.read_bytes() != previous:
                         raise CronError("cron recovery backup checksum mismatch; original source retained")
                 else:
-                    fd = os.open(str(backup) + ".tmp", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-                    staged = Path(str(backup) + ".tmp")
+                    fd, name = tempfile.mkstemp(prefix=backup.name + ".", suffix=".tmp", dir=backup.parent)
+                    staged = Path(name)
                     try:
                         with os.fdopen(fd, "wb") as stream:
                             stream.write(previous)
@@ -895,37 +919,47 @@ class Scheduler:
         """Fire everything due. Returns the ids that were started."""
         moment = time.time() if now is None else now
         started: list[str] = []
-        for job in due_jobs(moment):
-            with self._lock:
-                if job.id in self._running:
-                    # Skipped, not queued: a job that cannot keep up with its own
-                    # schedule should run less often, not accumulate copies.
+        for snapshot in due_jobs(moment):
+            # due_jobs is only a hint. Re-read under the same cross-process mutex
+            # used by edits and completion, and hold it through worker startup.
+            with _JOBS_LOCK:
+                job = find_job(snapshot.id)
+                if (job is None or _generation(job) != _generation(snapshot)
+                        or not job.enabled or job.next_run > moment
+                        or job.next_run != snapshot.next_run
+                        or job.runs != snapshot.runs):
+                    continue
+                with self._lock:
+                    running = job.id in self._running
+                if running:
                     _record_skip(job.id, next_run=job.parsed().next_after(moment),
                                  expected_generation=_generation(job))
                     continue
-            # Cross-process claim: mark the job as "claimed" in jobs.json under
-            # the SQLite mutex so a second gateway process reading the same file
-            # will not also start it. The claim writes a `_claimed_at` timestamp;
-            # _execute clears it on completion via _record_run.
-            claimed = _try_claim(job.id, moment)
-            if not claimed:
-                continue
-            with self._lock:
-                self._running.add(job.id)
-            started.append(job.id)
-            worker = threading.Thread(
-                target=self._execute, args=(job, moment), daemon=True,
-                name=f"zeline-cron-{job.id}",
-            )
-            with self._lock:
-                # Prune finished threads here rather than keeping every thread
-                # object for the process lifetime.
-                self._workers = [item for item in self._workers if item.is_alive()]
-                self._workers.append(worker)
-            worker.start()
+                claimed = _try_claim(job.id, moment)
+                if not claimed:
+                    continue
+                worker = None
+                try:
+                    worker = threading.Thread(
+                        target=self._execute, args=(job, moment, claimed), daemon=True,
+                        name=f"zeline-cron-{job.id}",
+                    )
+                    with self._lock:
+                        self._running.add(job.id)
+                        self._workers = [item for item in self._workers if item.is_alive()]
+                        self._workers.append(worker)
+                    worker.start()
+                except BaseException:
+                    with self._lock:
+                        self._running.discard(job.id)
+                        if worker in self._workers:
+                            self._workers.remove(worker)
+                    _release_claim(job.id, claimed)
+                    raise
+                started.append(job.id)  # only report workers actually started
         return started
 
-    def _execute(self, job: Job, moment: float) -> None:
+    def _execute(self, job: Job, moment: float, claim: _Claim | None = None) -> None:
         status = "ok"
         result_path = ""
         try:
@@ -936,7 +970,7 @@ class Scheduler:
             # Detect agent-level failures that return an ERROR envelope instead
             # of raising. Without this, budget exhaustion or provider failures
             # are recorded as successful output and propagated via context_from.
-            agent_error = isinstance(text, str) and text.lstrip().startswith("ERROR")
+            agent_error = not job.no_agent and isinstance(text, str) and text.lstrip().startswith("ERROR")
             path = save_output(job, text)
             result_path = str(path)
             if job.no_agent and not text:
@@ -985,7 +1019,7 @@ class Scheduler:
                 self.last_error = f"cron {job.id} metadata: {exc.__class__.__name__}: {exc}"[:500]
             finally:
                 try:
-                    _release_claim(job.id)
+                    _release_claim(job.id, claim)
                 except Exception:
                     pass
                 with self._lock:
