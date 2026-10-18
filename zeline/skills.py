@@ -877,6 +877,15 @@ def _delete_skill(name: str, absorbed_into: str) -> str:
             f"ERROR: '{name}' is a bundled/public skill; patch it instead "
             "(the patch is copied into private scope automatically)."
         )
+    # Pin protection — refuse delete on pinned skills.
+    try:
+        from zeline.skillforge import ForgeStore
+        if ForgeStore().is_pinned(name):
+            return (
+                f"ERROR: '{name}' is pinned — run `zeline skillforge unpin {name}` first."
+            )
+    except Exception:
+        pass  # SkillForge unavailable; allow delete to proceed.
     if absorbed_into:
         try:
             merged = _safe_name(absorbed_into)
