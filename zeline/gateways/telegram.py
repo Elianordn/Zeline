@@ -627,6 +627,25 @@ def _ordered_lines(lines: list[str]) -> list[str]:
     return [line for _index, line in sorted(enumerate(lines), key=key)]
 
 
+def _group_command_lines(lines: list[str]) -> list[str]:
+    """Share a heading for adjacent commands without collapsing their evidence."""
+    heading = "💻 Executing command…"
+    grouped: list[str] = []
+    in_commands = False
+    for line in lines:
+        is_command = line == heading or line.startswith(heading + " ")
+        if is_command:
+            command = line[len(heading):].strip()
+            if not in_commands:
+                grouped.append(f"{heading}\n{command}" if command else heading)
+            elif command:
+                grouped.append(command)
+        else:
+            grouped.append(line)
+        in_commands = is_command
+    return grouped
+
+
 def _finalize_line(line: str) -> str:
     """Ubah baris fase-kerja jadi bentuk 'selesai'.
 
@@ -655,9 +674,9 @@ def _tool_result_text(name: str, arguments: dict[str, Any], result: str) -> str 
             return None
         labels = {
             "create": "📙 Self-Improvement",
-            "patch": "📘 Refinements",
-            "write_file": "📗 Enhancements",
-            "delete": "📘 Refinements",
+            "patch": "📘 Self-Refinements",
+            "write_file": "📗 Self-Enhancements",
+            "delete": "📘 Self-Refinements",
         }
         label = labels.get(action, "📙 Self-Improvement")
         return f"{label}: {html.escape(result[:1000], quote=False)}"
@@ -811,6 +830,8 @@ class _LiveStatus:
         self.iteration: int | None = None
         self.maximum: int | None = None
         self._last_text: str | None = None
+        self._closed = False
+        self._creation_unknown = False
         self._lock = threading.Lock()
 
     def _header(self) -> str:
@@ -821,6 +842,8 @@ class _LiveStatus:
         itu diberi ambang lebih longgar dan label "Thinking". Begitu tool
         pertama jalan, statusnya jadi "Working" dengan ambang normal.
         """
+        if self.phase == "awaiting_user":
+            return "⏳ Waiting for your answer · /stop to cancel"
         elapsed = time.monotonic() - self.turn_started
         working = bool(self.lines)
         threshold = _STATUS_AFTER_SECONDS if working else _THINKING_AFTER_SECONDS
@@ -852,7 +875,7 @@ class _LiveStatus:
         # baris kosong. Diminta user: status yang mengambang di atas feed bikin
         # baris terbaru (yang justru paling penting) terdorong ke bawah, dan
         # jam yang berubah tiap detik menarik mata ke tempat yang salah.
-        ordered = _ordered_lines(self.lines)[-self.max_lines:]
+        ordered = _group_command_lines(_ordered_lines(self.lines)[-self.max_lines:])
         header = self._header()
         if header and ordered:
             return "\n".join(ordered) + "\n\n" + header
@@ -861,6 +884,8 @@ class _LiveStatus:
         return "\n".join(ordered)
 
     def _push_locked(self, force: bool = False, allow_create: bool = True) -> None:
+        if self._closed:
+            return
         # Bubble progres dibuat saat ada aktivitas tool nyata, ATAU saat turn
         # sudah berjalan lama tanpa kabar (header status) — supaya user tidak
         # merasa didiamkan. Pertanyaan ringan yang selesai cepat tetap bersih.
@@ -874,21 +899,45 @@ class _LiveStatus:
             return
         if text == self._last_text and not force:
             return
-        self._last_text = text
         if self.message_id is None:
+            if self._creation_unknown:
+                return
+            # A read timeout can mean Telegram accepted the message but its ID
+            # was lost. Never resend that creation on the next heartbeat. Send
+            # static activity first: an untracked bubble must not carry a live
+            # timer or /stop hint that we cannot remove when the turn finishes.
+            initial = "\n".join(_group_command_lines(
+                _ordered_lines(self.lines)[-self.max_lines:])) or "Agent activity"
+            self._creation_unknown = True
             payload = _api_call(
                 self.api, "sendMessage", chat_id=self.chat_id,
-                text=text, parse_mode="HTML",
+                text=initial, parse_mode="HTML",
                 timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS,
             )
             if payload and isinstance(payload.get("result"), dict):
                 self.message_id = payload["result"].get("message_id")
-        else:
-            _api_call(
-                self.api, "editMessageText", chat_id=self.chat_id,
-                message_id=self.message_id, text=text, parse_mode="HTML",
-                timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS,
-            )
+            if self.message_id is None:
+                return
+            self._creation_unknown = False
+            self._last_text = initial
+            if text == initial:
+                return
+        result = _api_call(
+            self.api, "editMessageText", chat_id=self.chat_id,
+            message_id=self.message_id, text=text, parse_mode="HTML",
+            timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS,
+        )
+        # Failed edits remain retryable even when the next tick has identical
+        # text (for example Waiting for your answer, which has no live timer).
+        if result:
+            self._last_text = text
+
+    def set_awaiting_user(self) -> None:
+        """Human input is idle waiting, never provider work or typing."""
+        with self._lock:
+            self.phase = "awaiting_user"
+            self.phase_started = time.monotonic()
+            self._push_locked()
 
     def set_waiting(self) -> None:
         """Tandai bahwa kita sedang menunggu respons provider (LLM berpikir).
@@ -908,6 +957,8 @@ class _LiveStatus:
         if not line:
             return
         with self._lock:
+            if self._closed:
+                return
             self.phase = "tool"
             self.phase_started = time.monotonic()
             category = _progress_category(line)
@@ -931,6 +982,24 @@ class _LiveStatus:
         with self._lock:
             self._push_locked(allow_create=False)
 
+    def _settle_terminal(self, method: str, **payload) -> None:
+        """Retry only an idempotent terminal edit/delete, outside the agent loop."""
+        call_api = _api_call
+        api = self.api
+        kwargs = {**payload, "timeout": _PROGRESS_TIMEOUT, "attempts": _PROGRESS_ATTEMPTS}
+        if call_api(api, method, **kwargs):
+            return
+
+        def retry():
+            for delay in (0.25, 1.0, 2.0):
+                time.sleep(delay)
+                if call_api(api, method, **kwargs):
+                    return
+
+        # Never retry sendMessage: only the already-known message ID is touched.
+        # A closed status cannot gain a timer or be reopened by this worker.
+        threading.Thread(target=retry, daemon=True, name="zeline-status-cleanup").start()
+
     def finalize(self) -> None:
         """Kunci bubble progres sebagai catatan permanen 'apa yang dikerjakan'.
 
@@ -940,21 +1009,23 @@ class _LiveStatus:
         pesan kosong.
         """
         with self._lock:
+            if self._closed:
+                return
+            self._closed = True
             if self.message_id is None:
                 return
             if not self.lines:
-                _api_call(
-                    self.api, "deleteMessage",
-                    chat_id=self.chat_id, message_id=self.message_id,
-                    timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS,
+                self._settle_terminal(
+                    "deleteMessage", chat_id=self.chat_id, message_id=self.message_id,
                 )
                 self.message_id = None
                 return
-            body = "\n".join(_finalize_line(line) for line in _ordered_lines(self.lines)[-self.max_lines:])
-            _api_call(
-                self.api, "editMessageText", chat_id=self.chat_id,
+            body = "\n".join(_group_command_lines([
+                _finalize_line(line) for line in _ordered_lines(self.lines)[-self.max_lines:]
+            ]))
+            self._settle_terminal(
+                "editMessageText", chat_id=self.chat_id,
                 message_id=self.message_id, text=body, parse_mode="HTML",
-                timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS,
             )
 
     def clear(self) -> None:
@@ -978,23 +1049,31 @@ class _LiveStatus:
         Bubble kosong (belum ada tool) cukup dilepaskan tanpa menyisakan sampah.
         """
         with self._lock:
+            if self._closed:
+                return
             if self.message_id is None:
                 self.lines = []
                 self._last_text = None
                 return
             if self.lines:
-                body = "\n".join(_finalize_line(line) for line in _ordered_lines(self.lines)[-self.max_lines:])
-                _api_call(
+                body = "\n".join(_group_command_lines([
+                    _finalize_line(line) for line in _ordered_lines(self.lines)[-self.max_lines:]
+                ]))
+                settled = _api_call(
                     self.api, "editMessageText", chat_id=self.chat_id,
                     message_id=self.message_id, text=body, parse_mode="HTML",
                     timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS,
                 )
             else:
-                _api_call(
+                settled = _api_call(
                     self.api, "deleteMessage",
                     chat_id=self.chat_id, message_id=self.message_id,
                     timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS,
                 )
+            if not settled:
+                # Do not abandon a message that may still contain Working.
+                # Later progress reuses this ID and finalize retries cleanup.
+                return
             self.message_id = None
             self.lines = []
             self._last_text = None
@@ -1024,8 +1103,9 @@ def _start_working_heartbeat(
     def heartbeat() -> None:
         while not done.wait(interval):
             try:
-                _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
-                          timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
+                if live.phase != "awaiting_user" and not done.is_set():
+                    _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
+                              timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
             except Exception:
                 pass
             live.tick()
@@ -2080,49 +2160,91 @@ def _edit_interactive(api: str, chat_id: int, message_id: int, text: str, **extr
 # either a button tap or the next plain message back to the waiting tool.
 #
 # callback_data is capped at 64 bytes by Telegram, so the payload is just
-# `ask:<chat_id>:<option_index>` — the question text stays in the process.
+# `ask:<chat_id>:<request_id>:<option_index>` binds taps to one question.
 
-def _ask_callback_data(chat_id: int, index: int) -> str:
-    return f"ask:{chat_id}:{index}"
+def _ask_callback_data(chat_id: int, index: int, request_id: str) -> str:
+    return f"ask:{chat_id}:{request_id}:{index}"
+
+
+def _ask_keyboard(chat_id: int, entry: Any) -> dict[str, Any]:
+    rows = [
+        [{"text": option[:64], "callback_data": _ask_callback_data(chat_id, index, entry.request_id)}]
+        for index, option in enumerate(entry.options)
+    ]
+    rows.append([{"text": "Fill in yourself", "callback_data": _ask_callback_data(chat_id, -1, entry.request_id)}])
+    return {"inline_keyboard": rows}
+
+
+def _ask_card_text(entry: Any, *, custom: bool = False) -> str:
+    body = f"Ask user: {entry.question}"
+    if entry.status == "answered":
+        return f"{body}\n\nAnswer: {entry.answer or '(empty answer)'}"
+    if entry.status == "cancelled":
+        return f"{body}\n\nAnswer: (cancelled)"
+    if entry.status == "expired":
+        return f"{body}\n\nAnswer: (no answer received)"
+    prompt = "Type your own answer below." if custom else "Choose an option or type your answer directly."
+    return f"{body}\n\nWaiting for your answer. {prompt}"
 
 
 def _handle_ask_callback(api: str, chat_id: int, message_id: int, data: str) -> None:
-    """Resolve a pending ask_user question from a tapped option button."""
+    """Bind each tap to its exact card; stale taps never overwrite receipts."""
     parts = data.split(":")
-    if len(parts) != 3:
+    if len(parts) != 4:
         return
     try:
-        target_chat = int(parts[1])
-        index = int(parts[2])
+        target_chat, index = int(parts[1]), int(parts[3])
     except ValueError:
         return
-    identity = f"telegram:{target_chat}"
-    chosen = interaction.answer_option(identity, index)
-    if chosen is None:
-        # Already answered, cancelled, or timed out — say so instead of leaving
-        # a dead button that looks like the tap was ignored.
-        _edit_interactive(api, chat_id, message_id, "That question is no longer waiting for an answer.")
+    if target_chat != chat_id:
         return
-    _edit_interactive(api, chat_id, message_id, f"✅ {chosen}")
+    identity = f"telegram:{chat_id}"
+    entry = interaction.pending(identity)
+    if (entry is None or entry.event.is_set() or entry.request_id != parts[2]
+            or entry.message_id != message_id):
+        return
+    if index == -1:
+        # This is a mode switch, NOT an answer. Plain text resolves the same wait.
+        # Edit only the owned card: a send fallback would create an untracked
+        # actionable picker that the resolution hook cannot retire.
+        _api_call(api, "editMessageText", chat_id=chat_id, message_id=message_id,
+                  text=_ask_card_text(entry, custom=True),
+                  reply_markup=_ask_keyboard(chat_id, entry),
+                  attempts=_INTERACTIVE_ATTEMPTS, timeout=20)
+        # Resolution may have rendered its receipt while this mode edit was in
+        # flight. Reconcile this exact card after the stale edit completes;
+        # never hold the interaction lock across network I/O or delay /stop.
+        if entry.status != "pending":
+            _api_call(api, "editMessageText", chat_id=chat_id, message_id=message_id,
+                      text=_ask_card_text(entry), reply_markup={"inline_keyboard": []},
+                      attempts=_INTERACTIVE_ATTEMPTS, timeout=20)
+        return
+    interaction.answer_option(identity, index, request_id=entry.request_id)
 
 
 def _render_ask_question(api: str, chat_id: int, entry: Any) -> None:
-    """Send the question bubble for a pending ask_user entry."""
-    text = f"❓ {entry.question}"
-    if entry.options:
-        rows = [
-            [{"text": option[:64], "callback_data": _ask_callback_data(chat_id, index)}]
-            for index, option in enumerate(entry.options)
-        ]
-        _api_call(
-            api, "sendMessage", chat_id=chat_id, text=text,
-            reply_markup={"inline_keyboard": rows},
-        )
-    else:
-        _api_call(
-            api, "sendMessage", chat_id=chat_id,
-            text=f"{text}\n\nReply with your answer.",
-        )
+    """Keep the question in chat, then edit it into a durable Q&A receipt."""
+    if entry.message_id is not None:
+        return
+
+    def resolved(completed):
+        if completed.message_id is not None:
+            _edit_interactive(api, chat_id, completed.message_id, _ask_card_text(completed),
+                              reply_markup={"inline_keyboard": []})
+
+    # Install the receipt hook BEFORE network I/O. A direct answer or /stop can
+    # arrive while sendMessage is in flight; the eventual card must still settle
+    # to Answer/(cancelled), never remain an orphaned picker.
+    entry.on_resolved = resolved
+    result = _api_call(api, "sendMessage", chat_id=chat_id,
+                       text=_ask_card_text(entry), reply_markup=_ask_keyboard(chat_id, entry))
+    if result and isinstance(result.get("result"), dict):
+        entry.message_id = result["result"].get("message_id")
+    # Human input is not a 180-second network request. /stop and /new still
+    # cancel the wait; a failed send retains the bounded fallback timeout.
+    entry.wait_forever = entry.message_id is not None
+    if entry.event.is_set() and entry.message_id is not None:
+        resolved(entry)
 
 
 def _handle_callback(api: str, callback: dict[str, Any], sessions) -> None:
@@ -2929,7 +3051,7 @@ def _build_media_notice_prompt(kind: str, path: Path, caption: str = "") -> str:
     return f"{instruction} Caption/request: {ask or '(no caption)'}"
 
 
-def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str, reply_to_message_id: int | None = None, _ticket=None) -> None:
+def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str, reply_to_message_id: int | None = None, _ticket=None) -> bool | None:
     def cancelled():
         return _ticket is not None and _ticket.cancel_event.is_set()
 
@@ -2955,23 +3077,8 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         # _safe_progress_line menjaga tag HTML (pre/code) tetap seimbang saat
         # dipangkas — mencegah editMessageText gagal "Can't find end tag pre".
         live.add(_safe_progress_line(_tool_progress_text(_name, _args)))
-        # ask_user memblokir sampai user menjawab, jadi pertanyaannya harus
-        # SUDAH terkirim sebelum tool-nya menunggu. Kirim di sini, tepat setelah
-        # tool call terlihat: kalau menunggu on_tool_result, pertanyaan baru
-        # muncul setelah jawabannya masuk — terlambat dan bikin user bingung.
-        if _name == "ask_user":
-            entry = None
-            # Tool berjalan di thread lain; beri jeda singkat sampai entry
-            # terdaftar, lalu render. Tanpa polling kecil ini kita bisa
-            # membaca state sebelum interaction.ask() mendaftarkannya.
-            for _ in range(20):
-                entry = interaction.pending(identity)
-                if entry is not None:
-                    break
-                time.sleep(0.05)
-            if entry is not None:
-                live.detach()
-                _render_ask_question(api, chat_id, entry)
+        # The registered interaction renderer owns question delivery. Polling
+        # here runs before tool dispatch and used to race/double-render cards.
 
     def on_tool_result(_name, _args, result):
         if cancelled():
@@ -3003,10 +3110,16 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         if not sentence:
             return
         live.detach()
+        # Narration is also a response to this turn's message. Keep its origin
+        # in the worker closure so queued follow-ups cannot steal the quote.
+        extra = {"reply_to_message_id": reply_to_message_id,
+                 "allow_sending_without_reply": True} if reply_to_message_id else {}
         for rendered_part in _telegram_html_parts(sentence):
+            if cancelled():
+                return
             sent = _api_call(
                 api, "sendMessage", chat_id=chat_id,
-                text=rendered_part, parse_mode="HTML",
+                text=rendered_part, parse_mode="HTML", **extra,
             )
             if sent is None:
                 print("  [telegram] narration delivery stopped after a failed part", flush=True)
@@ -3014,7 +3127,6 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
                   timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
 
-    ok = False
     # send_file mengirim file lewat channel ini. Didaftarkan HANYA selama turn
     # berjalan lalu dilepas di finally: kalau tetap terdaftar, sebuah cron job
     # atau turn lain bisa mengirim file ke chat yang salah.
@@ -3031,7 +3143,12 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
 
     delivery.register_channel(identity, _deliver_file)
     from zeline import interaction
-    interaction.register_channel(identity, lambda entry: None if cancelled() else _render_ask_question(api, chat_id, entry))
+    def render_question(entry):
+        if not cancelled():
+            live.set_awaiting_user()
+            _render_ask_question(api, chat_id, entry)
+
+    interaction.register_channel(identity, render_question)
     try:
         reply = sessions.send(
             **({"ticket": _ticket} if _ticket is not None else {}),
@@ -3043,7 +3160,6 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
             on_iteration=on_iteration,
             on_narration=on_narration,
         )
-        ok = True
     except ZelineError as exc:
         reply = _format_agent_error(str(exc))
     except Exception as exc:
@@ -3093,25 +3209,28 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
             break
         first_part = False
 
-    # Self-improvement: setelah turn berbobot (banyak tool), jalankan refleksi di
-    # background agar tidak menahan balasan. reflect() sendiri menjaga ambang
-    # (profile full + cukup tool call) dan hanya kirim pesan bila benar-benar
-    # menyimpan/memperbaiki skill — jadi ini yang bikin Zeline "sering
-    # Self-improvement" seperti diminta, tanpa nyampah di sesi ringan.
-    if ok:
-        def _reflect_bg():
-            try:
-                summary = sessions.reflect(identity)
-            except Exception:
-                summary = None
-            if summary:
-                for phase in summary.split("\n\n"):
-                    _api_call(
-                        api, "sendMessage", chat_id=chat_id,
-                        text=phase[:1500],
-                        parse_mode="HTML",
-                    )
-        threading.Thread(target=_reflect_bg, daemon=True, name=f"zeline-reflect-{chat_id}").start()
+    # Admitted turns must release their ticket BEFORE reflection tries the
+    # session's idle gate. The caller schedules it after finish_turn(). Legacy
+    # direct callers have no reserved ticket, so they may schedule immediately.
+    if _ticket is None:
+        _start_reflection(api, sessions, chat_id, identity, reply_to_message_id)
+    return True
+
+
+def _start_reflection(api, sessions, chat_id, identity, reply_to_message_id=None):
+    def reflect_bg():
+        try:
+            summary = sessions.reflect(identity)
+        except Exception as exc:
+            print(f"  [telegram] reflection failed: {type(exc).__name__}", flush=True)
+            return
+        if summary:
+            extra = {"reply_to_message_id": reply_to_message_id,
+                     "allow_sending_without_reply": True} if reply_to_message_id else {}
+            for phase in summary.split("\n\n"):
+                _api_call(api, "sendMessage", chat_id=chat_id,
+                          text=phase[:1500], parse_mode="HTML", **extra)
+    threading.Thread(target=reflect_bg, daemon=True, name=f"zeline-reflect-{chat_id}").start()
 
 
 def _interrupt_ack(progress: dict[str, Any]) -> str:
@@ -3127,7 +3246,7 @@ _busy_ack_lock = threading.Lock()
 _BUSY_ACK_COOLDOWN = 30.0
 
 
-def _send_busy_ack(api, sessions, identity, chat_id, progress):
+def _send_busy_ack(api, sessions, identity, chat_id, progress, *, reply_to_message_id=None):
     key = (id(sessions), identity)
     now = time.monotonic()
     with _busy_ack_lock:
@@ -3137,8 +3256,11 @@ def _send_busy_ack(api, sessions, identity, chat_id, progress):
             if now - stamp >= _BUSY_ACK_COOLDOWN:
                 _busy_ack_ts.pop(stale, None)
         _busy_ack_ts[key] = now
+    # Bind to the message that interrupted this run, never a shared "latest" ID.
+    extra = {"reply_to_message_id": reply_to_message_id,
+             "allow_sending_without_reply": True} if reply_to_message_id else {}
     sent = _api_call(api, "sendMessage", chat_id=chat_id, text=_interrupt_ack(progress),
-                     timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
+                     timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS, **extra)
     if not sent:
         with _busy_ack_lock:
             _busy_ack_ts.pop(key, None)  # Failed delivery must remain retryable.
@@ -3160,7 +3282,8 @@ def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text:
     if callable(getattr(sessions, "admit", None)):
         ticket = sessions.admit(identity, tool_profile, interrupt=True)
         if ticket is not None and ticket.previous_progress is not None:
-            _send_busy_ack(api, sessions, identity, chat_id, ticket.previous_progress)
+            _send_busy_ack(api, sessions, identity, chat_id, ticket.previous_progress,
+                           reply_to_message_id=reply_to_message_id)
         else:
             with _busy_ack_lock:
                 _busy_ack_ts.pop((id(sessions), identity), None)
@@ -3171,6 +3294,7 @@ def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text:
         pass
 
     def run_reserved():
+        reflect_ready = False
         try:
             if ticket is not None:
                 if not sessions.wait_turn(ticket):
@@ -3190,7 +3314,7 @@ def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text:
                         _api_call(api, "sendMessage", chat_id=chat_id, text=error,
                                   timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
                         return
-                _send_agent_reply(api, sessions, chat_id=chat_id, identity=identity, text=prepared_text,
+                reflect_ready = _send_agent_reply(api, sessions, chat_id=chat_id, identity=identity, text=prepared_text,
                                   tool_profile=tool_profile, reply_to_message_id=reply_to_message_id,
                                   _ticket=ticket)
             else:
@@ -3199,6 +3323,8 @@ def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text:
         finally:
             if ticket is not None:
                 sessions.finish_turn(ticket)
+        if reflect_ready and ticket is not None and not ticket.cancel_event.is_set():
+            _start_reflection(api, sessions, chat_id, identity, reply_to_message_id)
 
     worker = threading.Thread(
         target=run_reserved,

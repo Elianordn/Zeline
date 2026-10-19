@@ -1261,8 +1261,13 @@ class ZelinePublicCoreTests(unittest.TestCase):
             live.turn_started -= telegram._STATUS_AFTER_SECONDS + 1
             live.tick()  # heartbeat saja, tanpa tool baru
         created = [text for method, text in sent if method == "sendMessage"]
-        self.assertTrue(created)
-        self.assertIn(f"{telegram.WORKING_ICON} Working", created[0])
+        self.assertEqual(len(created), 1)
+        # Creation carries static evidence only until we know the Telegram ID.
+        # An accepted send with a lost response must never orphan a live timer.
+        self.assertNotIn("Working", created[0])
+        edited = [text for method, text in sent if method == "editMessageText"]
+        self.assertTrue(edited)
+        self.assertIn(f"{telegram.WORKING_ICON} Working", edited[-1])
 
     def test_heartbeat_on_a_toolless_turn_creates_no_bubble_before_the_thinking_mark(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
@@ -2633,7 +2638,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
                 return "beres"
             def reflect(self, _identity, *a, **k):
                 return ("📙 <b>Self-Improvement review:</b> active skill unchanged\n\n"
-                        "📘 <b>Refinements review:</b> proposal pending")
+                        "📘 <b>Self-Refinements review:</b> proposal pending")
 
         def api(_api, method, **kwargs):
             if method == "sendMessage":
@@ -2644,7 +2649,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
             telegram._send_agent_reply("bot-api", Sessions(), chat_id=42, identity="telegram:42", text="hi", tool_profile="full")
             time.sleep(0.15)
         self.assertIn("📙 <b>Self-Improvement review:</b> active skill unchanged", delivered)
-        self.assertIn("📘 <b>Refinements review:</b> proposal pending", delivered)
+        self.assertIn("📘 <b>Self-Refinements review:</b> proposal pending", delivered)
         self.assertFalse(any("\n\n" in text for text in delivered))
         self.assertFalse(any(text.startswith("📒 Improvement:") for text in delivered))
 
@@ -2657,11 +2662,11 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertEqual(telegram._tool_progress_text("manage_skill", {"action": "delete", "name": "dupe", "absorbed_into": "riset-prop-firm"}), "🧬 Merging skills: <code>dupe</code> into <code>riset-prop-firm</code>")
         self.assertEqual(telegram._tool_progress_text("manage_skill", {"action": "list"}), "🗃️ Browsing available skills…")
         result = telegram._tool_result_text("manage_skill", {"action": "patch", "name": "zeline-development"}, "Patched private/zeline-development/SKILL.md (1 replacement).")
-        self.assertEqual(result, "📘 Refinements: Patched private/zeline-development/SKILL.md (1 replacement).")
+        self.assertEqual(result, "📘 Self-Refinements: Patched private/zeline-development/SKILL.md (1 replacement).")
         saved = telegram._tool_result_text("manage_skill", {"action": "create", "name": "riset-prop-firm"}, "OK, skill 'riset-prop-firm' created at private/riset-prop-firm/SKILL.md.")
         self.assertEqual(saved, "📙 Self-Improvement: OK, skill 'riset-prop-firm' created at private/riset-prop-firm/SKILL.md.")
         enhanced = telegram._tool_result_text("manage_skill", {"action": "write_file", "name": "riset-prop-firm"}, "Wrote references/checks.md.")
-        self.assertEqual(enhanced, "📗 Enhancements: Wrote references/checks.md.")
+        self.assertEqual(enhanced, "📗 Self-Enhancements: Wrote references/checks.md.")
         # An inventory read is orientation, not an improvement: reporting it would
         # push the private skill list into the chat on every reflection.
         self.assertIsNone(telegram._tool_result_text("manage_skill", {"action": "list"}, "3 skills:\n- a [private/folder]: x"))
