@@ -517,7 +517,7 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         query = html.escape(str(arguments.get("query", "")).strip()[:100], quote=False)
         return f"⏱️ Recalling conversation history: {query}" if query else "⏱️ Recalling conversation history…"
     if name == "ask_user":
-        question = html.escape(str(arguments.get("question", "")).strip()[:80], quote=False)
+        question = html.escape(str(arguments.get("question", "")).strip()[:180], quote=False)
         return f"🙋 Requesting your input: {question}" if question else "🙋 Requesting your input…"
     if name == "network_route":
         action = str(arguments.get("action", "")).strip().lower()
