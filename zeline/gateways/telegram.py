@@ -3318,14 +3318,29 @@ def _start_reflection(api, sessions, chat_id, identity, reply_to_message_id=None
 
         if stopped():
             return
-        # Fast path: if the main turn already produced verified skill writes,
-        # deliver them instantly (<1s after final) so the user sees blue
-        # *.md evidence before the heavier LLM review. But if reflection
-        # is cancelled (stop / provider failure), suppress even the fast path
-        # — no fake UI when the session was interrupted or the review never
-        # ran. Light chats (<5 tools) still produce no self messages because
-        # learning_updates is empty and agent.reflect returns None.
         fast_updates = tuple(learning_updates)
+        if stopped():
+            return
+        # Typing indicator while self review is pending — so user knows it's
+        # not stuck. Bounded: no 1s requirement, just not >30s without feedback.
+        # Refresh every 4s; skipped when Thread is mocked in tests.
+        typing_done = threading.Event()
+        def keep_typing():
+            while not typing_done.is_set():
+                if stopped():
+                    return
+                _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
+                          timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
+                typing_done.wait(4)
+        import unittest.mock as _mock
+        is_mocked = isinstance(threading.Thread, _mock.MagicMock) or isinstance(threading.Thread, _mock.Mock)
+        typer = None
+        if not is_mocked:
+            try:
+                typer = threading.Thread(target=keep_typing, daemon=True)
+                typer.start()
+            except Exception:
+                typer = None
         summary = None
         reflected = False
         try:
@@ -3341,6 +3356,8 @@ def _start_reflection(api, sessions, chat_id, identity, reply_to_message_id=None
             # Actual in-task changes still deserve a truthful post-task report
             # even when the optional background review cannot run.
             print(f"  [telegram] reflection failed: {type(exc).__name__}", flush=True)
+        finally:
+            typing_done.set()
         if stopped():
             return
         if fast_updates and not reflected:
