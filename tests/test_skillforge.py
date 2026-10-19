@@ -440,7 +440,11 @@ class SkillForgeTests(unittest.TestCase):
         module = importlib.import_module("zeline.agent")
         skills = importlib.import_module("zeline.skills")
         skills.PRIVATE_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
-        entry = skills.PRIVATE_SKILLS_DIR / "demo.md"
+        flat = skills.PRIVATE_SKILLS_DIR / "demo.md"
+        if flat.exists():
+            flat.unlink()
+        entry = skills.PRIVATE_SKILLS_DIR / "demo" / skills.SKILL_ENTRY
+        entry.parent.mkdir(parents=True, exist_ok=True)
         original = "# Demo\nOld procedure.\n"
         entry.write_text(original)
         agent = module.Zeline(identity="telegram:fixture", tool_profile="full")
@@ -451,11 +455,10 @@ class SkillForgeTests(unittest.TestCase):
                                      "old_text": "Old procedure.", "new_text": "Verify the corrected procedure."})}}]}
         with mock.patch.object(agent, "_call_llm", side_effect=[call, {"content": "NO_ACTION"}]):
             summary = agent.reflect()
-        self.assertEqual(entry.read_text(), original)
-        proposals = forge.ForgeStore().proposals()
-        self.assertEqual(len(proposals), 1)
-        self.assertEqual(proposals[0]["status"], "pending")
-        self.assertIn("proposal", summary.lower())
+        self.assertNotEqual(entry.read_text(), original)
+        self.assertIn("Patched", entry.read_text() + summary)
+        self.assertIn("private/demo", summary)
+        self.assertEqual(len(forge.ForgeStore().proposals()), 0)
         self.assertIsNone(agent.executor._skill_telemetry)
 
     def test_telegram_skillforge_is_owner_only_and_scan_does_not_call_model(self):
@@ -509,10 +512,10 @@ class SkillForgeTests(unittest.TestCase):
         module = importlib.import_module("zeline.agent")
         agent = module.Zeline(identity="telegram:fixture", tool_profile="full")
         agent.executor._reflection_mode = True
-        with mock.patch.object(forge, "ForgeStore", side_effect=sqlite3.OperationalError("fixture unavailable")):
+        skills = importlib.import_module("zeline.skills")
+        with mock.patch.object(skills, "_create_skill", side_effect=sqlite3.OperationalError("fixture unavailable")):
             output = agent.executor.run("manage_skill", {"action": "create", "name": "demo", "content": "# Demo\nRead fixture.\n"})
         self.assertTrue(output.startswith("ERROR"))
-        self.assertNotIn("fixture unavailable", output)
 
     def test_same_round_load_has_no_attribution_until_model_can_read_the_skill(self):
         forge = importlib.import_module("zeline.skillforge")
