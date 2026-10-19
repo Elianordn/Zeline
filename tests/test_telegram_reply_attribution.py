@@ -52,13 +52,15 @@ class ReplyAttributionTests(unittest.TestCase):
         acknowledgements = [p for p in sent if "Interrupting current task" in p["text"]]
         self.assertTrue(acknowledgements)
         self.assertEqual(acknowledgements[0].get("reply_to_message_id"), 202)
-        expected = {"Narration for first": 101, "Narration for second": 202,
-                    "Narration for third": 303, "Answer for second": 202, "Answer for third": 303}
+        expected = {"Answer for second": 202, "Answer for third": 303}
         for text, target in expected.items():
             with self.subTest(text=text):
                 payload = next(p for p in sent if p["text"] == text)
                 self.assertEqual(payload.get("reply_to_message_id"), target)
                 self.assertTrue(payload.get("allow_sending_without_reply"))
+        narrations = [p for p in sent if p["text"].startswith("Narration for")]
+        self.assertTrue(narrations)
+        self.assertTrue(all("reply_to_message_id" not in p for p in narrations))
         self.assertFalse(any(p["text"] == "obsolete first answer" for p in sent))
 
     def test_single_turn_narration_and_final_quote_original_without_interrupt(self):
@@ -78,4 +80,5 @@ class ReplyAttributionTests(unittest.TestCase):
                 text="request", tool_profile="safe", reply_to_message_id=404)
         messages = [c.kwargs for c in api.call_args_list if c.args[1] == "sendMessage"]
         self.assertEqual(len(messages), 2)
-        self.assertEqual([p.get("reply_to_message_id") for p in messages], [404, 404])
+        self.assertNotIn("reply_to_message_id", messages[0])
+        self.assertEqual(messages[1].get("reply_to_message_id"), 404)

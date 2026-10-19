@@ -3164,16 +3164,12 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         if not sentence:
             return
         live.detach()
-        # Narration is also a response to this turn's message. Keep its origin
-        # in the worker closure so queued follow-ups cannot steal the quote.
-        extra = {"reply_to_message_id": reply_to_message_id,
-                 "allow_sending_without_reply": True} if reply_to_message_id else {}
         for rendered_part in _telegram_html_parts(sentence):
             if cancelled():
                 return
             sent = _api_call(
                 api, "sendMessage", chat_id=chat_id,
-                text=rendered_part, parse_mode="HTML", **extra,
+                text=rendered_part, parse_mode="HTML",
             )
             if sent is None:
                 print("  [telegram] narration delivery stopped after a failed part", flush=True)
