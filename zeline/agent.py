@@ -67,17 +67,28 @@ def _format_reflection_actions(actions: list[tuple[str, dict[str, Any], str]]) -
     refinements: list[str] = []
     enhancements: list[str] = []
     for name, args, result in actions:
-        clean = html.escape(str(result).strip(), quote=False)
+        raw = str(result).strip()
+        clean = html.escape(raw, quote=False)
         if name == "manage_skill":
             action = str(args.get("action", "")).strip().lower()
             if action == "patch":
                 refinements.append(clean)
             elif clean:
-                self_improvement.append(clean)
+                if action == "create":
+                    # "OK, skill 'name' created at private/name/SKILL.md." -> blue .md, no OK
+                    trimmed = clean.removeprefix("OK, ").removeprefix("OK ").strip()
+                    self_improvement.append(trimmed or clean)
+                else:
+                    self_improvement.append(clean)
         elif name == "resolve_lesson":
             enhancements.append("Resolved a recorded lesson after a verified successful retry.")
         elif name == "add_memory":
-            enhancements.append("Saved a low-confidence reflection memory for future-session guidance.")
+            if raw.startswith("OK,"):
+                enhancements.append("Memory updated")
+            elif raw.startswith("ERROR") or "already in memory" in raw.lower():
+                continue
+            else:
+                enhancements.append(clean)
     lines = []
     # A reflection is an improvement review by definition.  Keep this primary
     # phase mandatory whenever reflection produced a learning outcome; the two
