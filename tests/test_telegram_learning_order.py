@@ -61,7 +61,7 @@ class LearningOrderTests(unittest.TestCase):
             self.assertEqual(len(reports), 1, phase)
             i, payload = reports[0]
             self.assertGreater(i, final)
-            self.assertEqual(payload["reply_to_message_id"], 42)
+            self.assertNotIn("reply_to_message_id", payload)
             self.assertFalse(any(other in payload["text"] for other in PHASES if other != phase))
             self.assertNotIn("Creating skill", payload["text"])
 

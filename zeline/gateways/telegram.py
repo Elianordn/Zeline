@@ -3331,13 +3331,11 @@ def _start_reflection(api, sessions, chat_id, identity, reply_to_message_id=None
             # Actual in-task changes still deserve a truthful post-task report
             # even when the optional background review cannot run.
             print(f"  [telegram] reflection failed: {type(exc).__name__}", flush=True)
-        extra = {"reply_to_message_id": reply_to_message_id,
-                 "allow_sending_without_reply": True} if reply_to_message_id else {}
         for phase in _learning_report_parts(tuple(learning_updates), summary):
             if stopped():
                 return
             sent = _api_call(api, "sendMessage", chat_id=chat_id,
-                             text=phase, parse_mode="HTML", **extra)
+                             text=phase, parse_mode="HTML")
             if sent is None:
                 break
     threading.Thread(target=reflect_bg, daemon=True, name=f"zeline-reflect-{chat_id}").start()
