@@ -3314,7 +3314,16 @@ def _start_reflection(api, sessions, chat_id, identity, reply_to_message_id=None
 
         if stopped():
             return
+        # Fast path: if the main turn already produced verified skill writes,
+        # deliver them instantly (<1s after final) so the user sees blue
+        # *.md evidence before the heavier LLM review. But if reflection
+        # is cancelled (stop / provider failure), suppress even the fast path
+        # — no fake UI when the session was interrupted or the review never
+        # ran. Light chats (<5 tools) still produce no self messages because
+        # learning_updates is empty and agent.reflect returns None.
+        fast_updates = tuple(learning_updates)
         summary = None
+        reflected = False
         try:
             # Legacy session adapters need not implement the optional observer.
             try:
@@ -3323,11 +3332,30 @@ def _start_reflection(api, sessions, chat_id, identity, reply_to_message_id=None
                 parameters = {}
             options = {"on_ticket": capture_ticket} if "on_ticket" in parameters else {}
             summary = sessions.reflect(identity, **options)
+            reflected = True
         except Exception as exc:
             # Actual in-task changes still deserve a truthful post-task report
             # even when the optional background review cannot run.
             print(f"  [telegram] reflection failed: {type(exc).__name__}", flush=True)
-        for phase in _learning_report_parts(tuple(learning_updates), summary):
+        if stopped():
+            return
+        if fast_updates and not reflected:
+            # Reflection never completed — fall back to truthful fast updates.
+            for phase in _learning_report_parts(fast_updates, None):
+                if stopped():
+                    return
+                sent = _api_call(api, "sendMessage", chat_id=chat_id,
+                                 text=phase, parse_mode="HTML")
+                if sent is None:
+                    break
+            return
+        if fast_updates and reflected and not stopped():
+            # Reflection succeeded — fast updates are already covered in the
+            # merged report below, so no separate fast-path send. This keeps
+            # the 2-minute case fast (no extra LLM round) without duplicating
+            # or leaking when cancelled.
+            pass
+        for phase in _learning_report_parts(fast_updates, summary):
             if stopped():
                 return
             sent = _api_call(api, "sendMessage", chat_id=chat_id,
