@@ -2174,7 +2174,7 @@ def _ask_keyboard(chat_id: int, entry: Any) -> dict[str, Any]:
 
 
 def _ask_context_text(entry: Any) -> str:
-    body = f"Ask user: {entry.question}"
+    body = f"❓Ask user: {entry.question}"
     for index, option in enumerate(entry.options):
         body += f"\n\n{chr(65 + index)}. {option}"
     return body
@@ -2196,7 +2196,7 @@ def _ask_plain_parts(text: str) -> list[str]:
 
 def _ask_card_text(entry: Any, *, custom: bool = False) -> str:
     body = (_ask_context_text(entry) if not getattr(entry, "_telegram_ask_multipart", False)
-            else "Ask user: (full question and options in companion messages)")
+            else "❓Ask user: (full question and options in companion messages)")
     if entry.status == "answered":
         return f"{body}\n\nAnswer: {entry.answer or '(empty answer)'}"
     if entry.status == "cancelled":
