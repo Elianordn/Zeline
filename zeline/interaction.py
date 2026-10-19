@@ -37,7 +37,8 @@ from zeline import config
 MAX_ANSWER_CHARS = 2000
 MAX_QUESTION_CHARS = 500
 MAX_OPTIONS = 6
-MAX_OPTION_CHARS = 80
+# Choices are explanatory text, not button labels. Retain bounded full choices.
+MAX_OPTION_CHARS = 2000
 
 
 @dataclass

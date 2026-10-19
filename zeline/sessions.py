@@ -351,7 +351,8 @@ class SessionStore:
                     session.wake.set()
         return had_work or bool(killed)
 
-    def reflect(self, identity: str, min_tool_calls: int = 5) -> str | None:
+    def reflect(self, identity: str, min_tool_calls: int = 5, *,
+                on_ticket: Callable[[TurnTicket], None] | None = None) -> str | None:
         """Jalankan self-improvement review untuk sesi ini (best-effort).
 
         Dipanggil di akhir sesi penting. Aman: mengembalikan None bila sesi tidak
@@ -379,6 +380,10 @@ class SessionStore:
                 session.cancel_event = ticket.cancel_event
                 session.agent._should_stop = ticket.cancel_event.is_set
                 session.agent.executor._should_stop = ticket.cancel_event.is_set
+            # Publish this invocation's immutable cancellation token before work.
+            # Observers must be non-blocking; never invoke them under the store lock.
+            if on_ticket is not None:
+                on_ticket(ticket)
             try:
                 result = session.agent.reflect(min_tool_calls=min_tool_calls)
                 return None if ticket.cancel_event.is_set() else result
