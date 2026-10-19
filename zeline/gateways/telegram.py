@@ -680,6 +680,10 @@ def _tool_result_text(name: str, arguments: dict[str, Any], result: str) -> str 
         }
         label = labels.get(action, "📙 Self-Improvement")
         return f"{label}: {html.escape(result[:1000], quote=False)}"
+    if name == "add_memory" and result.startswith("OK,"):
+        return f"📗 Self-Enhancements: {html.escape(result[:1000], quote=False)}"
+    if name == "resolve_lesson" and not result.startswith("ERROR"):
+        return f"📗 Self-Enhancements: {html.escape(result[:1000], quote=False)}"
     return None
 
 
