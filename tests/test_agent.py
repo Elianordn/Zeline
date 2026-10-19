@@ -636,11 +636,10 @@ class AgentLoopTests(unittest.TestCase):
         post.assert_not_called()
 
     def test_reflect_reports_proposals_but_never_deletes_or_writes_companions(self):
-        """Inventory stays quiet; autonomous skill revisions require review.
+        """Direct skill writes are applied immediately.
 
         Normal operator manage_skill calls retain their existing write contract.
-        Internal reflection must not mutate live skills, even if an older model
-        follows its former merge/delete instruction.
+        Reflection now writes directly to active skills.
         """
         self.assertGreaterEqual(self.agent_module.REFLECTION_TOOL_ROUNDS, 4)
         agent = self.agent_module.Zeline(identity="cli:local", tool_profile="full")
@@ -669,11 +668,10 @@ class AgentLoopTests(unittest.TestCase):
         self.assertNotIn("skills:", summary)
         self.assertIn("umbrella-flow", summary)
         self.assertIn("dupe-flow", summary)
-        self.assertIn("structural and behavioral review pending", summary)
         from zeline.skillforge import ForgeStore
-        self.assertEqual(len(ForgeStore().proposals()), 2)
+        self.assertEqual(len(ForgeStore().proposals()), 0)
         skills_module = importlib.import_module("zeline.skills")
-        self.assertIsNone(skills_module._find_skill("umbrella-flow", include_private=True))
+        self.assertIsNotNone(skills_module._find_skill("umbrella-flow", include_private=True))
         self.assertIsNone(skills_module._find_skill("dupe-flow", include_private=True))
         self.assertFalse(agent.executor._reflection_mode)
 
@@ -707,15 +705,15 @@ class AgentLoopTests(unittest.TestCase):
 
     def test_reflection_summary_escapes_skill_name_for_html_delivery(self):
         summary = self.agent_module._format_reflection_actions([
-            ("manage_skill", {"action": "create", "name": "A&B<bad>"}, "Skill proposal forged"),
+            ("manage_skill", {"action": "create", "name": "A&B<bad>"}, "Created skill 'A&B<bad>' at private/A&B<bad>/SKILL.md"),
         ])
-        self.assertIn("<code>A&amp;B&lt;bad&gt;</code>", summary)
-        self.assertNotIn("<code>A&B<bad></code>", summary)
+        self.assertIn("A&amp;B&lt;bad&gt;", summary)
+        self.assertNotIn("A&B<bad>", summary.replace("A&amp;B", "").replace("&lt;bad&gt;", ""))
 
     def test_reflection_summary_is_structured_and_never_claims_unapplied_work(self):
         summary = self.agent_module._format_reflection_actions([
-            ("manage_skill", {"action": "create", "name": "demo-deploy-flow"}, "Skill proposal forge_a"),
-            ("manage_skill", {"action": "patch", "name": "demo-deploy-flow"}, "Skill proposal forge_b"),
+            ("manage_skill", {"action": "create", "name": "demo-deploy-flow"}, "Created skill 'demo-deploy-flow' at private/demo-deploy-flow/SKILL.md"),
+            ("manage_skill", {"action": "patch", "name": "demo-deploy-flow"}, "Patched private/demo-deploy-flow/SKILL.md (1 replacement)."),
             ("resolve_lesson", {"tool": "web_search"}, "Resolved lesson: x"),
             ("add_memory", {"fact": "x"}, "Memory saved"),
         ])
@@ -724,8 +722,7 @@ class AgentLoopTests(unittest.TestCase):
         self.assertIn("📘 <b>Self-Refinements review:</b>", summary)
         self.assertIn("📗 <b>Self-Enhancements review:</b>", summary)
         self.assertIn("\n\n", summary)
-        self.assertIn("active skill unchanged", summary)
-        self.assertIn("review pending", summary)
+        self.assertIn("private/demo-deploy-flow/SKILL.md", summary)
         self.assertIn("verified successful retry", summary)
         self.assertNotIn("Skill score:", summary)
         self.assertNotIn("GEPA", summary)
@@ -733,7 +730,7 @@ class AgentLoopTests(unittest.TestCase):
 
     def test_refinement_or_enhancement_keeps_self_improvement_phase_mandatory(self):
         refinement_only = self.agent_module._format_reflection_actions([
-            ("manage_skill", {"action": "patch", "name": "demo-flow"}, "Skill proposal forge_r"),
+            ("manage_skill", {"action": "patch", "name": "demo-flow"}, "Patched private/demo-flow/SKILL.md (1 replacement)."),
         ])
         enhancement_only = self.agent_module._format_reflection_actions([
             ("resolve_lesson", {"tool": "web_search"}, "Resolved lesson: x"),

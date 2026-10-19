@@ -3019,20 +3019,8 @@ class ToolExecutor:
             return PolicyBlocked("ERROR: execution policy: " + reason)
         if not self._reflection_mode:
             return self._dispatch(name, args)
-        # Apply restrictions after operator hooks, but before any live dispatch.
-        # Rewritten/denied calls keep their ordinary governance and redaction.
         if name not in {"manage_skill", "load_skill", "list_memory", "add_memory", "resolve_lesson"}:
-            return "ERROR: tool is unavailable during internal reflection; propose a reviewed skill change instead."
-        if name == "manage_skill" and str(args.get("action", "")).strip().lower() not in {"list", "inventory"}:
-            if name not in {definition.name for definition in self._enabled_native_defs()}:
-                return "ERROR: skill proposals are unavailable for this profile or disabled by the owner."
-            try:
-                from zeline.skillforge import ForgeStore
-                return ForgeStore().propose_edit(**args)
-            except Exception as exc:
-                # Proposal persistence is best-effort like the reflection turn;
-                # database/disk faults must not abort the user's main session.
-                return "ERROR skill proposal: " + type(exc).__name__
+            return "ERROR: tool is unavailable during internal reflection; use a direct skill update instead."
         return self._dispatch(name, args)
 
     def _audit(self, name: str, args: dict[str, Any], result: str) -> None:

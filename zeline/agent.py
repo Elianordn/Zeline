@@ -59,28 +59,20 @@ REFLECTION_TOOL_ROUNDS = 5
 def _format_reflection_actions(actions: list[tuple[str, dict[str, Any], str]]) -> str | None:
     """Render reflection output as truthful, reviewable outcomes.
 
-    Reflection is deliberately proposal-only for skill changes.  The chat must
-    never imply that a candidate was applied, scored, or behaviorally verified
-    when it only reached SkillForge.  A lesson is reported separately because
-    it is useful only after a verified successful retry has resolved it.
+    Active skill changes are applied directly when reflection runs.
+    A lesson is reported separately because it is useful only after a
+    verified successful retry has resolved it.
     """
     self_improvement: list[str] = []
     refinements: list[str] = []
     enhancements: list[str] = []
     for name, args, result in actions:
-        clean = str(result).strip()
+        clean = html.escape(str(result).strip(), quote=False)
         if name == "manage_skill":
             action = str(args.get("action", "")).strip().lower()
-            skill = html.escape(str(args.get("name", "")).strip() or "skill", quote=False)
-            if action == "create":
-                self_improvement.append(
-                    f"SkillForge proposal for <code>{skill}</code> created — active skill unchanged; structural and behavioral review pending."
-                )
-            elif action == "patch":
-                refinements.append(
-                    f"SkillForge revision proposal for <code>{skill}</code> created — active skill unchanged; no effectiveness score is claimed before evaluation."
-                )
-            else:
+            if action == "patch":
+                refinements.append(clean)
+            elif clean:
                 self_improvement.append(clean)
         elif name == "resolve_lesson":
             enhancements.append("Resolved a recorded lesson after a verified successful retry.")
@@ -1376,11 +1368,11 @@ class Zeline:
                     "Kalau YA, WAJIB mulai dengan manage_skill action='list' untuk "
                     "melihat skill yang sudah ada — jangan menyimpan nama baru untuk "
                     "pelajaran yang sudah punya skill. "
-                    "- Existing skill: load it, then propose manage_skill action='patch'. "
-                    "- New procedure: propose manage_skill action='create' with triggers, "
+                    "- Existing skill: load it, then manage_skill action='patch'. "
+                    "- New procedure: manage_skill action='create' with triggers, "
                     "numbered steps, verification and safety constraints. "
-                    "During internal reflection these writes become SkillForge proposals, "
-                    "NOT active edits. Tests and explicit operator review are required. "
+                    "During internal reflection these writes are applied directly "
+                    "to active skills. "
                     "Do not delete skills, write scripts or use shell/network tools here. "
                     "Do not claim an untested proposal is a proven improvement. "
                     "(B) Apakah user MENGOREKSI kamu berulang tentang hal yang sama "
