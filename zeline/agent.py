@@ -47,12 +47,27 @@ _PARALLEL_SAFE_TOOLS = frozenset({
     "deep_research",
 })
 
-# Putaran tool maksimum untuk ``reflect()``. Dulu 3, cukup untuk "simpan satu
-# file". Alur anti-duplikat sekarang butuh lebih: list → patch/create →
-# write_file(references/…) → delete(absorbed_into=…). Dengan 3 putaran refleksi
-# terpotong tepat sebelum penggabungan duplikat dijalankan, yaitu justru langkah
-# yang paling berharga.
-REFLECTION_TOOL_ROUNDS = 5
+# Putaran tool maksimum untuk ``reflect()``.
+#
+# Riwayat: 3 putaran, lalu 5. Angka 5 memberi ruang untuk alur anti-duplikat
+# (list → patch/create → write_file(references/…) → delete(absorbed_into=…)),
+# tetapi tiap putaran adalah satu panggilan LLM penuh dan dijalankan berurutan
+# setelah jawaban final. Di perangkat dengan RAM ketat (Termux/Android) lima
+# putaran berturut-turut menahan satu sesi hidup selama menit-menit, dan itulah
+# yang terbaca sebagai "hang" — bukan komputasi lokal, tapi menunggu provider
+# berurutan sambil konteks menumpuk.
+#
+# Tiga putaran tetap memuat alur yang berharga (orientasi → tulis → rapikan)
+# sambil memangkas dua panggilan terakhir yang paling jarang menghasilkan
+# perubahan berarti.
+REFLECTION_TOOL_ROUNDS = 3
+
+# Berapa kali ``add_memory`` boleh dipanggil dalam SATU siklus refleksi.
+# Tanpa batas ini, model bebas menulis satu fakta per putaran, dan karena
+# refleksi berjalan tiap turn berat, store terisi self-write tanpa pernah
+# ditinjau ulang — 143 dari 200 fakta pernah berasal dari jalur ini. Satu
+# penulisan per siklus memaksa model memilih pelajaran yang paling berharga.
+REFLECTION_MAX_MEMORY_WRITES = 1
 
 
 def _format_reflection_actions(actions: list[tuple[str, dict[str, Any], str]]) -> str | None:
@@ -1412,6 +1427,7 @@ class Zeline:
         previous_reflection = self.executor._reflection_mode
         self.executor._reflection_mode = True
         review_completed = False
+        memory_writes = 0
         try:
             for _ in range(REFLECTION_TOOL_ROUNDS):
                 message = self._call_llm()
@@ -1430,6 +1446,22 @@ class Zeline:
                             args = {}
                     except json.JSONDecodeError:
                         args = {}
+                    # ``add_memory`` dibatasi per siklus. Tanpa ini model menulis
+                    # satu fakta per putaran, dan karena refleksi berjalan tiap
+                    # turn berat, store terisi self-write yang tidak pernah
+                    # ditinjau — 143 dari 200 fakta pernah datang dari jalur ini.
+                    # Batasnya memaksa model memilih pelajaran paling berharga,
+                    # bukan membuang semuanya ke memori.
+                    if name == "add_memory" and memory_writes >= REFLECTION_MAX_MEMORY_WRITES:
+                        result = (
+                            "ERROR: reflection memory write budget exhausted for this "
+                            "review. Extra facts are dropped by design — keep the single "
+                            "most valuable lesson next time."
+                        )
+                        self.messages.append(
+                            {"role": "tool", "tool_call_id": str(tool_call.get("id", "")), "content": result}
+                        )
+                        continue
                     result = self.executor.run(name, args)
                     # ``list`` hanya orientasi (cek duplikat) — bukan perubahan, jadi
                     # tidak dilaporkan sebagai hasil self-improvement. Tanpa filter ini
@@ -1440,6 +1472,8 @@ class Zeline:
                     )
                     is_lesson_change = name == "resolve_lesson"
                     is_reflection_memory = name == "add_memory"
+                    if is_reflection_memory and not result.startswith("ERROR"):
+                        memory_writes += 1
                     if (is_skill_change or is_lesson_change or is_reflection_memory) and not result.startswith("ERROR"):
                         actions.append((name, args, result))
                     self.messages.append(
