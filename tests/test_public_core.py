@@ -2632,8 +2632,8 @@ class ZelinePublicCoreTests(unittest.TestCase):
             def send(self, **_kwargs):
                 return "beres"
             def reflect(self, _identity, *a, **k):
-                return ("📙 <b>Self-Improvement review:</b> active skill unchanged\n\n"
-                        "📘 <b>Refinements review:</b> proposal pending")
+                return ("📙 <b>Self-Enhancement:</b> active skill unchanged\n\n"
+                        "📘 <b>Self-Improvement:</b> proposal pending")
 
         def api(_api, method, **kwargs):
             if method == "sendMessage":
@@ -2643,8 +2643,8 @@ class ZelinePublicCoreTests(unittest.TestCase):
         with mock.patch.object(telegram, "_api_call", side_effect=api):
             telegram._send_agent_reply("bot-api", Sessions(), chat_id=42, identity="telegram:42", text="hi", tool_profile="full")
             time.sleep(0.15)
-        self.assertIn("📙 <b>Self-Improvement review:</b> active skill unchanged", delivered)
-        self.assertIn("📘 <b>Refinements review:</b> proposal pending", delivered)
+        self.assertIn("📙 <b>Self-Enhancement:</b> active skill unchanged", delivered)
+        self.assertIn("📘 <b>Self-Improvement:</b> proposal pending", delivered)
         self.assertFalse(any("\n\n" in text for text in delivered))
         self.assertFalse(any(text.startswith("📒 Improvement:") for text in delivered))
 
@@ -2656,12 +2656,13 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertEqual(telegram._tool_progress_text("manage_skill", {"action": "write_file", "name": "riset-prop-firm", "file_path": "references/api.md"}), "📄 Writing skill resource: <code>references/api.md</code>")
         self.assertEqual(telegram._tool_progress_text("manage_skill", {"action": "delete", "name": "dupe", "absorbed_into": "riset-prop-firm"}), "🧬 Merging skills: <code>dupe</code> into <code>riset-prop-firm</code>")
         self.assertEqual(telegram._tool_progress_text("manage_skill", {"action": "list"}), "🗃️ Browsing available skills…")
-        result = telegram._tool_result_text("manage_skill", {"action": "patch", "name": "zeline-development"}, "Patched private/zeline-development/SKILL.md (1 replacement).")
-        self.assertEqual(result, "📘 Refinements: Patched private/zeline-development/SKILL.md (1 replacement).")
-        saved = telegram._tool_result_text("manage_skill", {"action": "create", "name": "riset-prop-firm"}, "OK, skill 'riset-prop-firm' created at private/riset-prop-firm/SKILL.md.")
-        self.assertEqual(saved, "📙 Self-Improvement: OK, skill 'riset-prop-firm' created at private/riset-prop-firm/SKILL.md.")
-        enhanced = telegram._tool_result_text("manage_skill", {"action": "write_file", "name": "riset-prop-firm"}, "Wrote references/checks.md.")
-        self.assertEqual(enhanced, "📗 Enhancements: Wrote references/checks.md.")
+        # Mutasi skill TIDAK lagi dirender dari feed live: karena satu siklus
+        # refleksi memakai beberapa putaran tool, labeling live memunculkan
+        # 📙/📘/📗 sekaligus dalam satu sesi. Self-improvement hanya dilaporkan
+        # sekali oleh agent._format_reflection_actions setelah review selesai.
+        self.assertIsNone(telegram._tool_result_text("manage_skill", {"action": "patch", "name": "zeline-development"}, "Patched private/zeline-development/SKILL.md (1 replacement)."))
+        self.assertIsNone(telegram._tool_result_text("manage_skill", {"action": "create", "name": "riset-prop-firm"}, "OK, skill 'riset-prop-firm' created at private/riset-prop-firm/SKILL.md."))
+        self.assertIsNone(telegram._tool_result_text("manage_skill", {"action": "write_file", "name": "riset-prop-firm"}, "Wrote references/checks.md."))
         # An inventory read is orientation, not an improvement: reporting it would
         # push the private skill list into the chat on every reflection.
         self.assertIsNone(telegram._tool_result_text("manage_skill", {"action": "list"}, "3 skills:\n- a [private/folder]: x"))

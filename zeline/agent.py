@@ -66,40 +66,57 @@ def _format_reflection_actions(actions: list[tuple[str, dict[str, Any], str]]) -
     self_improvement: list[str] = []
     refinements: list[str] = []
     enhancements: list[str] = []
+    seen: set[str] = set()
+
+    def _add(bucket: list[str], text: str) -> None:
+        # Satu siklus refleksi boleh memakai beberapa putaran tool, dan putaran
+        # itu sering menyentuh skill yang sama (patch lalu write_file lalu
+        # patch lagi). Tanpa dedup, satu fase yang sama dilaporkan berkali-kali
+        # dalam satu kartu. Normalisasi ringan agar teks identik tidak ganda.
+        key = " ".join(text.split()).lower()
+        if key in seen:
+            return
+        seen.add(key)
+        bucket.append(text)
+
     for name, args, result in actions:
         clean = str(result).strip()
         if name == "manage_skill":
             action = str(args.get("action", "")).strip().lower()
             skill = html.escape(str(args.get("name", "")).strip() or "skill", quote=False)
             if action == "create":
-                self_improvement.append(
-                    f"SkillForge proposal for <code>{skill}</code> created — active skill unchanged; structural and behavioral review pending."
+                _add(
+                    self_improvement,
+                    f"SkillForge proposal for <code>{skill}</code> created — active skill unchanged; structural and behavioral review pending.",
                 )
-            elif action == "patch":
-                refinements.append(
-                    f"SkillForge revision proposal for <code>{skill}</code> created — active skill unchanged; no effectiveness score is claimed before evaluation."
+            elif action in {"patch", "delete"}:
+                _add(
+                    refinements,
+                    f"SkillForge revision proposal for <code>{skill}</code> created — active skill unchanged; no effectiveness score is claimed before evaluation.",
                 )
             else:
-                self_improvement.append(clean)
+                _add(self_improvement, clean)
         elif name == "resolve_lesson":
-            enhancements.append("Resolved a recorded lesson after a verified successful retry.")
+            _add(enhancements, "Resolved a recorded lesson after a verified successful retry.")
         elif name == "add_memory":
-            enhancements.append("Saved a low-confidence reflection memory for future-session guidance.")
+            _add(enhancements, "Saved a low-confidence reflection memory for future-session guidance.")
     lines = []
-    # A reflection is an improvement review by definition.  Keep this primary
-    # phase mandatory whenever reflection produced a learning outcome; the two
-    # follow-up phases remain conditional on their actual evidence.
+    # Setiap fase punya gate buktinya sendiri. Dulu satu refleksi dengan
+    # beberapa mutasi skill memunculkan 📙, 📘, dan 📗 sekaligus, dan itu
+    # terbaca seolah tiga tahap berjalan bersamaan — padahal itu satu review.
+    # Sekarang fase hanya muncul bila aksinya benar-benar terjadi:
+    #   📙 hanya bila ADA proposal skill baru / perubahan tak-terklasifikasi
+    #   📘 hanya bila ADA revisi skill (patch/delete)
+    #   📗 hanya bila ADA lesson yang tuntas atau memori refleksi tersimpan
+    # Refleksi yang berjalan tapi tidak menghasilkan bukti apa pun tidak
+    # mengirim fase apa-apa (mengembalikan None) — bukan "no separate proposal
+    # was needed" yang cuma jadi noise tiap turn berat.
     if self_improvement:
-        lines.append("📙 <b>Self-Improvement review:</b> " + " ".join(self_improvement))
-    elif refinements or enhancements:
-        lines.append(
-            "📙 <b>Self-Improvement review:</b> Reviewed verified task evidence; "
-            "no separate reusable-skill proposal was needed."
-        )
+        lines.append("📙 <b>Self-Enhancement:</b> " + " ".join(self_improvement))
     if refinements:
-        lines.append("📘 <b>Refinements review:</b> " + " ".join(refinements))
+        lines.append("📘 <b>Self-Improvement:</b> " + " ".join(refinements))
     if enhancements:
-        lines.append("📗 <b>Enhancements review:</b> " + " ".join(enhancements))
+        lines.append("📗 <b>Self-Refinement:</b> " + " ".join(enhancements))
     # A blank-line delimiter is intentional: Telegram emits each phase as a
     # separate message rather than merging unrelated review outcomes into one
     # noisy card.

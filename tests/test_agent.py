@@ -720,9 +720,9 @@ class AgentLoopTests(unittest.TestCase):
             ("add_memory", {"fact": "x"}, "Memory saved"),
         ])
         self.assertIsNotNone(summary)
-        self.assertIn("📙 <b>Self-Improvement review:</b>", summary)
-        self.assertIn("📘 <b>Refinements review:</b>", summary)
-        self.assertIn("📗 <b>Enhancements review:</b>", summary)
+        self.assertIn("📙 <b>Self-Enhancement:</b>", summary)
+        self.assertIn("📘 <b>Self-Improvement:</b>", summary)
+        self.assertIn("📗 <b>Self-Refinement:</b>", summary)
         self.assertIn("\n\n", summary)
         self.assertIn("active skill unchanged", summary)
         self.assertIn("review pending", summary)
@@ -731,19 +731,41 @@ class AgentLoopTests(unittest.TestCase):
         self.assertNotIn("GEPA", summary)
         self.assertIsNone(self.agent_module._format_reflection_actions([]))
 
-    def test_refinement_or_enhancement_keeps_self_improvement_phase_mandatory(self):
+    def test_reflection_phases_appear_only_for_their_own_evidence(self):
+        """Setiap fase mustahil muncul tanpa aksi yang benar-benar terjadi.
+
+        Dulu satu refleksi dengan beberapa mutasi skill memunculkan 📙, 📘,
+        📗 sekaligus, sehingga terbaca seolah tiga tahap berjalan bersamaan.
+        Sekarang tiap fase berdiri sendiri: tanpa bukti, fase itu tidak ada —
+        dan tidak ada fase 📙 paksaan yang cuma jadi noise.
+        """
         refinement_only = self.agent_module._format_reflection_actions([
             ("manage_skill", {"action": "patch", "name": "demo-flow"}, "Skill proposal forge_r"),
         ])
+        self.assertIsNotNone(refinement_only)
+        self.assertIn("📘 <b>Self-Improvement:</b>", refinement_only)
+        self.assertNotIn("📙 <b>Self-Enhancement:</b>", refinement_only)
+        self.assertNotIn("📗 <b>Self-Refinement:</b>", refinement_only)
+        self.assertNotIn("no separate reusable-skill proposal was needed", refinement_only)
+
         enhancement_only = self.agent_module._format_reflection_actions([
             ("resolve_lesson", {"tool": "web_search"}, "Resolved lesson: x"),
         ])
-        for summary, secondary in ((refinement_only, "📘 <b>Refinements review:</b>"),
-                                   (enhancement_only, "📗 <b>Enhancements review:</b>")):
-            self.assertIsNotNone(summary)
-            self.assertIn("📙 <b>Self-Improvement review:</b>", summary)
-            self.assertIn(secondary, summary)
-            self.assertIn("no separate reusable-skill proposal was needed", summary)
+        self.assertIsNotNone(enhancement_only)
+        self.assertIn("📗 <b>Self-Refinement:</b>", enhancement_only)
+        self.assertNotIn("📙 <b>Self-Enhancement:</b>", enhancement_only)
+        self.assertNotIn("📘 <b>Self-Improvement:</b>", enhancement_only)
+
+    def test_reflection_summary_deduplicates_repeated_actions(self):
+        """Satu siklus refleksi menyentuh skill yang sama berkali-kali."""
+        summary = self.agent_module._format_reflection_actions([
+            ("manage_skill", {"action": "patch", "name": "demo-flow"}, "Skill proposal forge_r"),
+            ("manage_skill", {"action": "patch", "name": "demo-flow"}, "Skill proposal forge_r"),
+            ("manage_skill", {"action": "patch", "name": "demo-flow"}, "Skill proposal forge_z"),
+        ])
+        self.assertIsNotNone(summary)
+        self.assertEqual(summary.count("SkillForge revision proposal"), 1)
+        self.assertEqual(summary.count("📘 <b>Self-Improvement:</b>"), 1)
 
     def test_web_search_uses_bing_serp_and_includes_urls(self):
         # web_search must try the Bing SERP engine first and return title+URL

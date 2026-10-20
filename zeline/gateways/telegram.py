@@ -645,22 +645,21 @@ def _finalize_line(line: str) -> str:
 
 
 def _tool_result_text(name: str, arguments: dict[str, Any], result: str) -> str | None:
-    """Render hanya hasil nyata yang bernilai sebagai progress terpisah."""
-    if name == "manage_skill" and not result.startswith("ERROR"):
-        # Inventory is orientation only: never leak a private skill list as an
-        # accomplishment. Mutations use the same vocabulary as background
-        # reflection so the chat has one coherent improvement language.
-        action = str(arguments.get("action", "")).strip().lower()
-        if action in {"list", "inventory"}:
-            return None
-        labels = {
-            "create": "📙 Self-Improvement",
-            "patch": "📘 Refinements",
-            "write_file": "📗 Enhancements",
-            "delete": "📘 Refinements",
-        }
-        label = labels.get(action, "📙 Self-Improvement")
-        return f"{label}: {html.escape(result[:1000], quote=False)}"
+    """Render hanya hasil nyata yang bernilai sebagai progress terpisah.
+
+    ``manage_skill`` sengaja TIDAK pernah dirender di sini. Dulu setiap
+    mutasi skill langsung dicap 📙/📘/📗 dari feed live, dan karena satu
+    siklus refleksi boleh memakai beberapa putaran tool (list → create →
+    write_file → patch → delete), satu sesi refleksi memunculkan ketiga
+    label sekaligus — terbaca seperti tiga fase berjalan bersamaan padahal
+    itu satu review yang sedang bekerja.
+
+    Self-improvement dilaporkan HANYA oleh ``agent._format_reflection_actions``
+    setelah refleksi selesai, tempat setiap label punya gate bukti sendiri
+    (create → 📙, patch/delete → 📘, resolve_lesson/add_memory → 📗). Feed live
+    tetap menyebut aktivitasnya lewat ``_tool_progress_text`` seperti tool lain,
+    tanpa mengklaim hasil yang belum direview.
+    """
     return None
 
 
