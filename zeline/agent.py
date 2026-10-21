@@ -12,7 +12,6 @@ import json
 import re
 import time
 import threading
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 import requests
@@ -25,6 +24,7 @@ from zeline import lessons
 from zeline.tools import ToolExecutor
 from zeline import project_rules
 from zeline import tool_protocol
+from zeline.narration import NarrationGate
 from zeline import usage_stats
 from zeline.run_budget import RunBudget, BudgetExceeded
 
@@ -968,7 +968,15 @@ class Zeline:
         self._trim_history()
         self._force_stop = threading.Event()
         self._should_stop = should_stop
-        self.executor._should_stop = self._cancelled
+        # A worker retains this turn's event/predicate even after send() resets
+        # the agent's active fields for the next message.
+        force_stop = self._force_stop
+        def tool_cancelled():
+            try:
+                return force_stop.is_set() or bool(should_stop and should_stop())
+            except Exception:
+                return True
+        self.executor._should_stop = tool_cancelled
         self.executor._interrupt_reason = interrupt_reason
         self._turn_skill_context = ""
         self._turn_memory_context = ""
@@ -1076,6 +1084,13 @@ class Zeline:
         on_stream_delta: Callable[[str], None] | None = None,
     ) -> str:
         turn_started = time.monotonic()
+        narration_gate = NarrationGate()
+        turn_deadline = turn_started + config.MAX_TURN_SECONDS
+        turn_stop = self.executor._should_stop
+        waiting_for_user = False
+        self.executor._should_stop = lambda: (
+            bool(turn_stop and turn_stop())
+            or (not waiting_for_user and time.monotonic() >= turn_deadline))
         repeated_failures = 0  # tool call berturut yang balik ERROR
 
         for iteration in range(1, config.MAX_TOOL_ROUNDS + 1):
@@ -1132,7 +1147,9 @@ class Zeline:
             # terminal → temuan), bukan diam lalu tiba-tiba dump panjang.
             narration = str(message.get("content") or "").strip()
             if narration and on_narration:
-                on_narration(narration)
+                selected = narration_gate.select(narration)
+                if selected is not None:
+                    on_narration(selected)
 
             # Urutan ini wajib untuk OpenAI-compatible tool calling.
             self.messages.append(
@@ -1173,34 +1190,42 @@ class Zeline:
 
             recorded_results: list[dict[str, Any]] = []
             if run_parallel:
-                with ThreadPoolExecutor(max_workers=min(len(parsed_calls), 5)) as pool:
-                    futures = [pool.submit(self.executor.run, name, args)
-                               for _call, name, args in parsed_calls]
-                    completed = []
-                    failure = None
-                    for (call, _name, _args), future in zip(parsed_calls, futures):
-                        try:
-                            completed.append((call, future.result()))
-                        except Exception as exc:
-                            if failure is None:
-                                failure = exc
-                    if failure is not None:
-                        # Drain all futures: a later submission may have finished
-                        # even if an earlier one exhausted the shared budget.
-                        self.messages.extend(
-                            {"role": "tool", "tool_call_id": str(call.get("id", "")),
-                             "content": str(result)} for call, result in completed
-                        )
-                        self._checkpoint()
-                        raise failure
-                    results = [result for _call, result in completed]
+                from zeline.parallel_runtime import ParallelRuntime
+                runtime = getattr(self, "_parallel_runtime", None)
+                if runtime is None:
+                    runtime = self._parallel_runtime = ParallelRuntime(
+                        getattr(config, "MAX_PARALLEL_TOOLS", 5))
+                invocation = self.executor.capture_context()
+                original_stop = invocation.get("_should_stop")
+
+                def invoke(item, batch_cancelled):
+                    _call, name, args = item
+                    context = dict(invocation)
+                    context["_should_stop"] = lambda: (
+                        batch_cancelled() or bool(original_stop and original_stop()))
+                    with self.executor.invocation_context(context):
+                        return self.executor.run(name, args)
+
+                batch = runtime.run(parsed_calls, invoke, self._cancelled, turn_deadline)
                 recorded_results = [
-                    {"role": "tool", "tool_call_id": str(call.get("id", "")), "content": str(result)}
-                    for (call, _name, _args), result in zip(parsed_calls, results)
+                    {"role": "tool", "tool_call_id": str(parsed_calls[index][0].get("id", "")),
+                     "content": str(batch.results[index])}
+                    for index in sorted(batch.results)
                 ]
-                # Persist evidence before the checkpoint callback can fail.
+                # Detached workers only update their private batch object. Only
+                # this waiting thread may write evidence into the transcript.
                 self.messages.extend(recorded_results)
                 self._checkpoint()
+                if batch.error is not None:
+                    raise batch.error
+                if batch.reason == "cancelled":
+                    raise _TurnCancelled()
+                if batch.reason == "deadline":
+                    self._drop_incomplete_tail()
+                    answer = self._force_final_answer(should_stop, on_stream_delta=on_stream_delta)
+                    self._trim_history()
+                    return answer
+                results = [batch.results[index] for index in range(len(parsed_calls))]
             else:
                 # Serial: cek pembatalan SEBELUM tiap tool, jadi /stop tidak
                 # perlu menunggu seluruh rangkaian tool selesai.
@@ -1209,7 +1234,16 @@ class Zeline:
                     for tool_call, name, args in parsed_calls:
                         if should_stop and should_stop():
                             break
-                        result = self.executor.run(name, args)
+                        human_wait_started = time.monotonic() if name == "ask_user" else None
+                        waiting_for_user = human_wait_started is not None
+                        try:
+                            result = self.executor.run(name, args)
+                        finally:
+                            if human_wait_started is not None:
+                                idle_seconds = time.monotonic() - human_wait_started
+                                turn_started += idle_seconds
+                                turn_deadline += idle_seconds
+                            waiting_for_user = False
                         results.append(result)
                         recorded = {
                             "role": "tool",
@@ -1269,6 +1303,8 @@ class Zeline:
                     )
 
             steer_text = take_steer() if take_steer else None
+            if steer_text:
+                narration_gate = NarrationGate()
             for recorded, (tool_call, name, args), result in zip(recorded_results, parsed_calls, results):
                 if on_tool_result:
                     on_tool_result(name, args, result)
@@ -1336,7 +1372,8 @@ class Zeline:
             "Coba pecah pertanyaannya jadi bagian lebih kecil."
         )
 
-    def reflect(self, min_tool_calls: int = 5) -> str | None:
+    def reflect(self, min_tool_calls: int = 5, *,
+                on_review: Callable[[], None] | None = None) -> str | None:
         """Self-improvement review di akhir sesi penting (profile full saja).
 
         Menyuruh model meninjau percakapan yang baru saja terjadi lalu, bila ada
@@ -1360,6 +1397,9 @@ class Zeline:
             # LLM/SkillForge review for lightweight turns; it never skips the
             # mandatory evidence-learning path.
             return None
+        # Admission observers must not announce a review skipped by this gate.
+        if on_review is not None:
+            on_review()
         # Snapshot history saat ini; refleksi tidak boleh mencemari percakapan
         # utama, jadi kita kerjakan di salinan pesan yang dibuang setelah selesai.
         saved_messages = copy.deepcopy(self.messages)

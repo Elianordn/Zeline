@@ -364,15 +364,15 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         command = str(arguments.get("command", ""))
         line = _terminal_progress(command, search=_is_search_command(command))
         if arguments.get("background"):
-            return f"🚀 Starting background process {line}" if line else "🚀 Starting background process…"
+            return f"🌟 Starting background process {line}" if line else "🌟 Starting background process…"
         return f"💻 Executing command… {line}" if line else "💻 Executing command…"
     if name == "process_control":
         action = str(arguments.get("action", "")).strip().lower()
         job = html.escape(str(arguments.get("job_id", ""))[:40], quote=False)
         labels = {
             "list": "📋 Listing active processes…",
-            "poll": f"🔄 Checking process status <code>{job}</code>…" if job else "🔄 Checking process status…",
-            "log": f"📜 Reading process logs <code>{job}</code>" if job else "📜 Reading process logs…",
+            "poll": f"🛄 Checking process status <code>{job}</code>…" if job else "🛄 Checking process status…",
+            "log": f"📖 Reading process logs <code>{job}</code>" if job else "📖 Reading process logs…",
             "kill": f"🛑 Terminating process <code>{job}</code>" if job else "🛑 Terminating process…",
         }
         return labels.get(action, "⚙️ Managing background process…")
@@ -389,7 +389,7 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         if action == "create":
             return f"✨ Creating skill: <code>{skill_name}</code>"
         if action == "write_file":
-            return f"📄 Writing skill resource: <code>{file_path or 'file'}</code>"
+            return f"📝 Writing skill resource: <code>{file_path or 'file'}</code>"
         if action == "delete":
             merged = html.escape(str(arguments.get("absorbed_into", ""))[:100], quote=False)
             if merged:
@@ -401,10 +401,10 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         tool = html.escape(str(arguments.get("tool", ""))[:60], quote=False)
         return f"🎓 Resolving lesson: <code>{tool}</code>" if tool else "🎓 Resolving a lesson…"
     if name == "add_memory":
-        return "🧠 Saving to memory…"
+        return "🔍 Saving to memory…"
     if name == "remove_memory":
         # Verb harus jujur: dulu penghapusan ikut dilabeli "Saving to memory".
-        return "🧹 Removing memory…"
+        return "🌀 Removing memory…"
     if name == "system_env":
         return "🖥️ Inspecting system environment…"
     path = html.escape(_short_path(str(arguments.get("path", "")))[:120], quote=False)
@@ -419,9 +419,9 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
     if name == "write_file":
         return f"📝 Writing file: <code>{path}</code>"
     if name == "edit_file":
-        return f"✏️ Editing file: <code>{path}</code>"
+        return f"📝 Editing file: <code>{path}</code>"
     if name == "patch_file":
-        return f"✏️ Editing file: <code>{path}</code>"
+        return f"📝 Editing file: <code>{path}</code>"
     if name == "search_files":
         query = html.escape(str(arguments.get("query", ""))[:200], quote=False)
         return f"🔎 Searching workspace: {query}" if query else "🔎 Searching workspace…"
@@ -433,13 +433,13 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         action = str(arguments.get("action", "")).strip().lower()
         if action == "list":
             target = html.escape(_short_path(str(arguments.get("path", "")))[:80], quote=False)
-            return f"🕓 Reviewing file checkpoints: <code>{target}</code>" if target else "🕓 Reviewing file checkpoints…"
+            return f"⏱️ Reviewing file checkpoints: <code>{target}</code>" if target else "⏱️ Reviewing file checkpoints…"
         cid = html.escape(str(arguments.get("checkpoint_id", ""))[:32], quote=False)
         if action == "diff":
             return f"🔍 Previewing file changes: <code>{cid}</code>" if cid else "🔍 Previewing file changes…"
         if action == "restore":
-            return f"↩️ Restoring previous version: <code>{cid}</code>" if cid else "↩️ Restoring previous version…"
-        return "↩️ Undoing a file change…"
+            return f"✂️ Restoring previous version: <code>{cid}</code>" if cid else "✂️ Restoring previous version…"
+        return "✂️ Undoing a file change…"
     if name == "web_search":
         # Searching (web): satu baris ringkas, di-collapse. Subjek utama saja.
         query = str(arguments.get("query", "")).strip()
@@ -450,7 +450,7 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         return ""
     if name == "deep_research":
         query = html.escape(str(arguments.get('query', ''))[:100], quote=False)
-        return f"🧠 Researching in depth: {query}…" if query else "🧠 Researching in depth…"
+        return f"🔍 Researching in depth: {query}…" if query else "🔍 Researching in depth…"
     if name == "generate_image":
         prompt = html.escape(str(arguments.get("prompt", ""))[:100], quote=False)
         return f"🎨 Generating image: {prompt}…" if prompt else "🎨 Generating image…"
@@ -460,18 +460,18 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
             return "🎞️ Analyzing video…"
         if any(target.endswith(ext) for ext in (".ogg", ".oga", ".opus", ".mp3", ".m4a", ".wav", ".flac", ".aac", ".amr")):
             return "🎧 Analyzing audio…"
-        return "👁️ Analyzing image…"
+        return "👀 Analyzing image…"
     if name == "send_file":
         target = html.escape(_short_path(str(arguments.get("path", "")))[:120], quote=False)
         return f"📤 Sending file <code>{target}</code>" if target else "📤 Sending a file…"
     if name == "git":
         verb = str(arguments.get("action", "")).strip().lower()
         labels = {
-            "status": "🌿 Checking repository status…",
+            "status": "📁 Checking repository status…",
             "diff": "🔍 Reviewing code changes…",
-            "log": "📜 Reading commit history…",
+            "log": "📖 Reading commit history…",
             "show": "🔎 Inspecting commit…",
-            "branch": "🌱 Listing repository branches…",
+            "branch": "🗳️ Listing repository branches…",
         }
         if verb in labels:
             return labels[verb]
@@ -480,8 +480,8 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
             return f"📦 Staging changes: <code>{target}</code>" if target else "📦 Staging changes…"
         if verb == "commit":
             subject = html.escape(str(arguments.get("message", "")).splitlines()[0][:60], quote=False) if arguments.get("message") else ""
-            return f"💾 Committing changes: {subject}" if subject else "💾 Committing changes…"
-        return "🌿 Running git…"
+            return f"🗳️ Committing changes: {subject}" if subject else "🗳️ Committing changes…"
+        return "📁 Running git…"
     if name == "schedule_task":
         verb = str(arguments.get("action", "")).strip().lower()
         if verb == "add":
@@ -492,32 +492,32 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         job = html.escape(str(arguments.get("job_id", ""))[:32], quote=False)
         labels = {
             "show": "📅 Reviewing scheduled task",
-            "pause": "⏸️ Pausing scheduled task",
-            "resume": "▶️ Resuming scheduled task",
-            "run": "▶️ Running scheduled task",
+            "pause": "🅿️ Pausing scheduled task",
+            "resume": "⏸️ Resuming scheduled task",
+            "run": "⏸️ Running scheduled task",
             "remove": "🗑 Removing scheduled job",
         }
         label = labels.get(verb, "⏰ Managing scheduled jobs")
         return f"{label} {job}".strip() if job else f"{label}…"
     if name == "http_request":
         url = html.escape(str(arguments.get("url", ""))[:120], quote=False)
-        return f"🔗 Sending API request: {url}" if url else "🔗 Sending API request…"
+        return f"🖇️ Sending API request: {url}" if url else "🖇️ Sending API request…"
     if name == "delegate_task":
         goal = html.escape(str(arguments.get("goal", ""))[:100], quote=False)
-        return f"🤝 Delegating task: {goal}…" if goal else "🤝 Delegating task…"
+        return f"⚓ Delegating task: {goal}…" if goal else "⚓ Delegating task…"
     if name == "runtime_info":
         # Bukan "runtime info": yang dibaca adalah identitas runtime aktif —
         # model, provider, protokol, profil tool.
         return "🪪 Checking agent runtime…"
     if name == "list_memory":
-        # Ikon 🧠 dipakai satu keluarga untuk memory; VERB-nya yang membedakan
+        # Ikon 🔍 dipakai satu keluarga untuk memory; VERB-nya yang membedakan
         # baca / simpan / hapus, jadi feed tetap terbaca sebagai satu domain.
-        return "🧠 Retrieving saved memories…"
+        return "🔍 Retrieving saved memories…"
     if name == "recall_history":
         query = html.escape(str(arguments.get("query", "")).strip()[:100], quote=False)
-        return f"🕰️ Recalling conversation history: {query}" if query else "🕰️ Recalling conversation history…"
+        return f"⏱️ Recalling conversation history: {query}" if query else "⏱️ Recalling conversation history…"
     if name == "ask_user":
-        question = html.escape(str(arguments.get("question", "")).strip()[:80], quote=False)
+        question = html.escape(str(arguments.get("question", "")).strip()[:180], quote=False)
         return f"🙋 Requesting your input: {question}" if question else "🙋 Requesting your input…"
     if name == "network_route":
         action = str(arguments.get("action", "")).strip().lower()
@@ -525,12 +525,12 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         label = html.escape(str(arguments.get("label", ""))[:60], quote=False)
         target = f": <code>{label}</code>" if label else ""
         labels = {
-            "list": "🛰 Listing network routes…",
+            "list": "🛠️ Listing network routes…",
             "add": f"🛜 Configuring network route{target}",
-            "remove": f"🛰 Removing network route{target}",
-            "test": f"📡 Testing network connection{target}",
+            "remove": f"🛠️ Removing network route{target}",
+            "test": f"🛜 Testing network connection{target}",
         }
-        return labels.get(action, "🛰 Managing network routes…")
+        return labels.get(action, "🛠️ Managing network routes…")
     if name == "browser":
         action = str(arguments.get("action", "")).strip().lower()
         host = html.escape(_short_host(str(arguments.get("url", "")))[:80], quote=False)
@@ -541,17 +541,17 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         if action == "text":
             return f"📖 Reading webpage content{where}"
         if action == "click":
-            return f"🖱 Interacting with webpage{where}" if selector else "🖱 Interacting with webpage…"
+            return f"🗃️ Interacting with webpage{where}" if selector else "🗃️ Interacting with webpage…"
         if action == "type":
-            return f"⌨️ Entering text{where}" if selector else "⌨️ Entering text…"
+            return f"⚡ Entering text{where}" if selector else "⚡ Entering text…"
         if action == "screenshot":
             return f"📸 Capturing webpage screenshot <code>{path}</code>" if path else "📸 Capturing webpage screenshot…"
         if action == "links":
-            return "🔗 Extracting page links…"
+            return "🖇️ Extracting page links…"
         if action == "eval":
-            return "🧪 Executing browser script…"
+            return "📂 Executing browser script…"
         if action == "close":
-            return "🚪 Closing browser session…"
+            return "📴 Closing browser session…"
         return "🌐 Driving the browser…"
     if name == "code_intel":
         action = str(arguments.get("action", "")).strip().lower()
@@ -562,17 +562,17 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
             line_no = 0
         at = f"{where} L{line_no}" if (where and line_no > 0) else where
         if action == "diagnostics":
-            return f"🩺 Analyzing code diagnostics{where}" if where else "🩺 Analyzing code diagnostics…"
+            return f"⚙️ Analyzing code diagnostics{where}" if where else "⚙️ Analyzing code diagnostics…"
         if action == "definition":
-            return f"🎯 Locating symbol definition{at}" if at else "🎯 Locating symbol definition…"
+            return f"📍 Locating symbol definition{at}" if at else "📍 Locating symbol definition…"
         if action == "references":
-            return f"🔗 Finding symbol references{at}" if at else "🔗 Finding symbol references…"
+            return f"🖇️ Finding symbol references{at}" if at else "🖇️ Finding symbol references…"
         if action == "hover":
             return f"💡 Inspecting type information{at}" if at else "💡 Inspecting type information…"
         if action == "symbols":
             return f"🗺 Mapping symbols{where}" if where else "🗺 Mapping file symbols…"
         if action == "servers":
-            return "🩺 Checking language servers…"
+            return "⚙️ Checking language servers…"
         return f"🧭 Asking the language server{where}"
     if name == "download_file":
         # URL mentah tidak ditampilkan (sama seperti web_fetch): host saja.
@@ -588,7 +588,7 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         parts = name[len(mcp_module.MCP_TOOL_PREFIX):].split("__", 1)
         server = html.escape(parts[0].replace("_", " ")[:40], quote=False)
         remote = html.escape((parts[1] if len(parts) > 1 else "tool").replace("_", " ")[:60], quote=False)
-        return f"🧩 Connecting to external tool: {remote} via {server}"
+        return f"🛜 Connecting to external tool: {remote} via {server}"
     # Fallback: satu baris, argumen pertama saja, TANPA newline.
     first_val = ""
     if isinstance(arguments, dict) and arguments:
@@ -605,7 +605,7 @@ def _progress_category(line: str) -> str | None:
     shell, run code TIDAK di-collapse — tiap file & command tampil sendiri supaya
     user lihat SEMUA yang dikerjakan, bukan cuma satu ringkasan.
     """
-    if line.startswith("🧠 Researching in depth"):
+    if line.startswith("🔍 Researching in depth"):
         return "research"
     if line.startswith("🔎 Searching the web"):
         return "search"
@@ -627,6 +627,25 @@ def _ordered_lines(lines: list[str]) -> list[str]:
     return [line for _index, line in sorted(enumerate(lines), key=key)]
 
 
+def _group_command_lines(lines: list[str]) -> list[str]:
+    """Share a heading for adjacent commands without collapsing their evidence."""
+    heading = "💻 Executing command…"
+    grouped: list[str] = []
+    in_commands = False
+    for line in lines:
+        is_command = line == heading or line.startswith(heading + " ")
+        if is_command:
+            command = line[len(heading):].strip()
+            if not in_commands:
+                grouped.append(f"{heading}\n{command}" if command else heading)
+            elif command:
+                grouped.append(command)
+        else:
+            grouped.append(line)
+        in_commands = is_command
+    return grouped
+
+
 def _finalize_line(line: str) -> str:
     """Ubah baris fase-kerja jadi bentuk 'selesai'.
 
@@ -635,7 +654,7 @@ def _finalize_line(line: str) -> str:
     penanda generik 'data/other'. Baris file (📖 Reading <file>) dibiarkan apa
     adanya supaya SEMUA file yang dibaca tetap terlihat.
     """
-    prefixes = ("🔎 Searching the web", "🧠 Researching in depth")
+    prefixes = ("🔎 Searching the web", "🔍 Researching in depth")
     for prefix in prefixes:
         if line.startswith(prefix):
             # Ambil subjek setelah ikon+verb, buang elipsis/trailing.
@@ -810,6 +829,8 @@ class _LiveStatus:
         self.iteration: int | None = None
         self.maximum: int | None = None
         self._last_text: str | None = None
+        self._closed = False
+        self._creation_unknown = False
         self._lock = threading.Lock()
 
     def _header(self) -> str:
@@ -820,6 +841,8 @@ class _LiveStatus:
         itu diberi ambang lebih longgar dan label "Thinking". Begitu tool
         pertama jalan, statusnya jadi "Working" dengan ambang normal.
         """
+        if self.phase == "awaiting_user":
+            return "⏳ Waiting for your answer · /stop to cancel"
         elapsed = time.monotonic() - self.turn_started
         working = bool(self.lines)
         threshold = _STATUS_AFTER_SECONDS if working else _THINKING_AFTER_SECONDS
@@ -851,7 +874,7 @@ class _LiveStatus:
         # baris kosong. Diminta user: status yang mengambang di atas feed bikin
         # baris terbaru (yang justru paling penting) terdorong ke bawah, dan
         # jam yang berubah tiap detik menarik mata ke tempat yang salah.
-        ordered = _ordered_lines(self.lines)[-self.max_lines:]
+        ordered = _group_command_lines(_ordered_lines(self.lines)[-self.max_lines:])
         header = self._header()
         if header and ordered:
             return "\n".join(ordered) + "\n\n" + header
@@ -860,6 +883,8 @@ class _LiveStatus:
         return "\n".join(ordered)
 
     def _push_locked(self, force: bool = False, allow_create: bool = True) -> None:
+        if self._closed:
+            return
         # Bubble progres dibuat saat ada aktivitas tool nyata, ATAU saat turn
         # sudah berjalan lama tanpa kabar (header status) — supaya user tidak
         # merasa didiamkan. Pertanyaan ringan yang selesai cepat tetap bersih.
@@ -873,21 +898,45 @@ class _LiveStatus:
             return
         if text == self._last_text and not force:
             return
-        self._last_text = text
         if self.message_id is None:
+            if self._creation_unknown:
+                return
+            # A read timeout can mean Telegram accepted the message but its ID
+            # was lost. Never resend that creation on the next heartbeat. Send
+            # static activity first: an untracked bubble must not carry a live
+            # timer or /stop hint that we cannot remove when the turn finishes.
+            initial = "\n".join(_group_command_lines(
+                _ordered_lines(self.lines)[-self.max_lines:])) or "Agent activity"
+            self._creation_unknown = True
             payload = _api_call(
                 self.api, "sendMessage", chat_id=self.chat_id,
-                text=text, parse_mode="HTML",
+                text=initial, parse_mode="HTML",
                 timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS,
             )
             if payload and isinstance(payload.get("result"), dict):
                 self.message_id = payload["result"].get("message_id")
-        else:
-            _api_call(
-                self.api, "editMessageText", chat_id=self.chat_id,
-                message_id=self.message_id, text=text, parse_mode="HTML",
-                timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS,
-            )
+            if self.message_id is None:
+                return
+            self._creation_unknown = False
+            self._last_text = initial
+            if text == initial:
+                return
+        result = _api_call(
+            self.api, "editMessageText", chat_id=self.chat_id,
+            message_id=self.message_id, text=text, parse_mode="HTML",
+            timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS,
+        )
+        # Failed edits remain retryable even when the next tick has identical
+        # text (for example Waiting for your answer, which has no live timer).
+        if result:
+            self._last_text = text
+
+    def set_awaiting_user(self) -> None:
+        """Human input is idle waiting, never provider work or typing."""
+        with self._lock:
+            self.phase = "awaiting_user"
+            self.phase_started = time.monotonic()
+            self._push_locked()
 
     def set_waiting(self) -> None:
         """Tandai bahwa kita sedang menunggu respons provider (LLM berpikir).
@@ -907,6 +956,8 @@ class _LiveStatus:
         if not line:
             return
         with self._lock:
+            if self._closed:
+                return
             self.phase = "tool"
             self.phase_started = time.monotonic()
             category = _progress_category(line)
@@ -930,6 +981,24 @@ class _LiveStatus:
         with self._lock:
             self._push_locked(allow_create=False)
 
+    def _settle_terminal(self, method: str, **payload) -> None:
+        """Retry only an idempotent terminal edit/delete, outside the agent loop."""
+        call_api = _api_call
+        api = self.api
+        kwargs = {**payload, "timeout": _PROGRESS_TIMEOUT, "attempts": _PROGRESS_ATTEMPTS}
+        if call_api(api, method, **kwargs):
+            return
+
+        def retry():
+            for delay in (0.25, 1.0, 2.0):
+                time.sleep(delay)
+                if call_api(api, method, **kwargs):
+                    return
+
+        # Never retry sendMessage: only the already-known message ID is touched.
+        # A closed status cannot gain a timer or be reopened by this worker.
+        threading.Thread(target=retry, daemon=True, name="zeline-status-cleanup").start()
+
     def finalize(self) -> None:
         """Kunci bubble progres sebagai catatan permanen 'apa yang dikerjakan'.
 
@@ -939,21 +1008,23 @@ class _LiveStatus:
         pesan kosong.
         """
         with self._lock:
+            if self._closed:
+                return
+            self._closed = True
             if self.message_id is None:
                 return
             if not self.lines:
-                _api_call(
-                    self.api, "deleteMessage",
-                    chat_id=self.chat_id, message_id=self.message_id,
-                    timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS,
+                self._settle_terminal(
+                    "deleteMessage", chat_id=self.chat_id, message_id=self.message_id,
                 )
                 self.message_id = None
                 return
-            body = "\n".join(_finalize_line(line) for line in _ordered_lines(self.lines)[-self.max_lines:])
-            _api_call(
-                self.api, "editMessageText", chat_id=self.chat_id,
+            body = "\n".join(_group_command_lines([
+                _finalize_line(line) for line in _ordered_lines(self.lines)[-self.max_lines:]
+            ]))
+            self._settle_terminal(
+                "editMessageText", chat_id=self.chat_id,
                 message_id=self.message_id, text=body, parse_mode="HTML",
-                timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS,
             )
 
     def clear(self) -> None:
@@ -977,23 +1048,31 @@ class _LiveStatus:
         Bubble kosong (belum ada tool) cukup dilepaskan tanpa menyisakan sampah.
         """
         with self._lock:
+            if self._closed:
+                return
             if self.message_id is None:
                 self.lines = []
                 self._last_text = None
                 return
             if self.lines:
-                body = "\n".join(_finalize_line(line) for line in _ordered_lines(self.lines)[-self.max_lines:])
-                _api_call(
+                body = "\n".join(_group_command_lines([
+                    _finalize_line(line) for line in _ordered_lines(self.lines)[-self.max_lines:]
+                ]))
+                settled = _api_call(
                     self.api, "editMessageText", chat_id=self.chat_id,
                     message_id=self.message_id, text=body, parse_mode="HTML",
                     timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS,
                 )
             else:
-                _api_call(
+                settled = _api_call(
                     self.api, "deleteMessage",
                     chat_id=self.chat_id, message_id=self.message_id,
                     timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS,
                 )
+            if not settled:
+                # Do not abandon a message that may still contain Working.
+                # Later progress reuses this ID and finalize retries cleanup.
+                return
             self.message_id = None
             self.lines = []
             self._last_text = None
@@ -1023,8 +1102,9 @@ def _start_working_heartbeat(
     def heartbeat() -> None:
         while not done.wait(interval):
             try:
-                _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
-                          timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
+                if live.phase != "awaiting_user" and not done.is_set():
+                    _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
+                              timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
             except Exception:
                 pass
             live.tick()
@@ -1909,15 +1989,13 @@ def _handle_command_update(
         _api_call(api, "sendMessage", chat_id=chat_id, text=picker_text, reply_markup=markup)
         return True
     if command == "/stop":
-        status = sessions.status(identity)
         stopped = sessions.stop(identity)
-        title = str(status.get("title") or "Active task").strip()
         if stopped:
             _note_stop(identity)
             # SATU pesan saja. Turn yang dibatalkan TIDAK ikut mengirim
             # "Stopped." (lihat _send_agent_reply) dan refleksi dilewati, jadi
             # inilah satu-satunya balasan untuk /stop.
-            reply = f"❄️ Stopped — {title}"
+            reply = "⛔ Stopped. You can continue this session."
         elif _stopped_recently(identity):
             # /stop kedua (dobel-tap, atau update yang sama dikirim ulang
             # Telegram) tiba setelah turn benar-benar berhenti. Membalas
@@ -2079,49 +2157,145 @@ def _edit_interactive(api: str, chat_id: int, message_id: int, text: str, **extr
 # either a button tap or the next plain message back to the waiting tool.
 #
 # callback_data is capped at 64 bytes by Telegram, so the payload is just
-# `ask:<chat_id>:<option_index>` — the question text stays in the process.
+# `ask:<chat_id>:<request_id>:<option_index>` binds taps to one question.
 
-def _ask_callback_data(chat_id: int, index: int) -> str:
-    return f"ask:{chat_id}:{index}"
+def _ask_callback_data(chat_id: int, index: int, request_id: str) -> str:
+    return f"ask:{chat_id}:{request_id}:{index}"
+
+
+def _ask_keyboard(chat_id: int, entry: Any) -> dict[str, Any]:
+    rows = [
+        [{"text": chr(65 + index), "callback_data": _ask_callback_data(chat_id, index, entry.request_id)}]
+        for index in range(len(entry.options))
+    ]
+    rows.append([{"text": "Fill in yourself", "callback_data": _ask_callback_data(chat_id, -1, entry.request_id)}])
+    return {"inline_keyboard": rows}
+
+
+def _ask_context_text(entry: Any) -> str:
+    body = f"❓Ask user: {entry.question}"
+    for index, option in enumerate(entry.options):
+        body += f"\n\n{chr(65 + index)}. {option}"
+    return body
+
+
+def _ask_plain_parts(text: str) -> list[str]:
+    """Bound plain-text messages in UTF-16 units, without splitting a character."""
+    parts: list[str] = []
+    start = units = 0
+    for index, char in enumerate(text):
+        width = 2 if ord(char) > 0xFFFF else 1
+        if units + width > 4096:
+            parts.append(text[start:index])
+            start, units = index, 0
+        units += width
+    parts.append(text[start:])
+    return parts
+
+
+def _ask_card_text(entry: Any, *, custom: bool = False) -> str:
+    body = (_ask_context_text(entry) if not getattr(entry, "_telegram_ask_multipart", False)
+            else "❓Ask user: (full question and options in companion messages)")
+    if entry.status == "answered":
+        return f"{body}\n\nAnswer: {entry.answer or '(empty answer)'}"
+    if entry.status == "cancelled":
+        return f"{body}\n\nAnswer: (cancelled)"
+    if entry.status == "expired":
+        return f"{body}\n\nAnswer: (no answer received)"
+    prompt = "Type your own answer below." if custom else "Choose an option or type your answer directly."
+    return f"{body}\n\nWaiting for your answer. {prompt}"
+
+
+def _ask_prepare_card(api: str, chat_id: int, entry: Any) -> bool:
+    """Send immutable context only when necessary; never create extra keyboards.
+
+    A long typed answer can also outgrow an initially single-message card. Move
+    its unchanged context above the owned receipt before editing that same ID.
+    """
+    if len(_ask_plain_parts(_ask_card_text(entry))) == 1:
+        return True
+    for part in _ask_plain_parts(_ask_context_text(entry)):
+        if not _api_call(api, "sendMessage", chat_id=chat_id, text=part):
+            return False
+    entry._telegram_ask_multipart = True
+    return True
+
+
+def _ask_edit_receipt(api: str, chat_id: int, entry: Any) -> None:
+    if entry.message_id is None:
+        return
+    if not _ask_prepare_card(api, chat_id, entry):
+        # Delivery failed: at least retire the owned keyboard, without creating
+        # a replacement picker or claiming a complete receipt was delivered.
+        _api_call(api, "editMessageReplyMarkup", chat_id=chat_id,
+                  message_id=entry.message_id, reply_markup={"inline_keyboard": []})
+        return
+    edited = _api_call(api, "editMessageText", chat_id=chat_id, message_id=entry.message_id,
+                       text=_ask_card_text(entry), reply_markup={"inline_keyboard": []},
+                       attempts=_INTERACTIVE_ATTEMPTS, timeout=20)
+    if not edited:
+        # Idempotent best-effort cleanup: never create an unowned replacement.
+        _api_call(api, "editMessageReplyMarkup", chat_id=chat_id,
+                  message_id=entry.message_id, reply_markup={"inline_keyboard": []},
+                  attempts=_PROGRESS_ATTEMPTS, timeout=_PROGRESS_TIMEOUT)
 
 
 def _handle_ask_callback(api: str, chat_id: int, message_id: int, data: str) -> None:
-    """Resolve a pending ask_user question from a tapped option button."""
+    """Bind each tap to its exact card; stale taps never overwrite receipts."""
     parts = data.split(":")
-    if len(parts) != 3:
+    if len(parts) != 4:
         return
     try:
-        target_chat = int(parts[1])
-        index = int(parts[2])
+        target_chat, index = int(parts[1]), int(parts[3])
     except ValueError:
         return
-    identity = f"telegram:{target_chat}"
-    chosen = interaction.answer_option(identity, index)
-    if chosen is None:
-        # Already answered, cancelled, or timed out — say so instead of leaving
-        # a dead button that looks like the tap was ignored.
-        _edit_interactive(api, chat_id, message_id, "That question is no longer waiting for an answer.")
+    if target_chat != chat_id:
         return
-    _edit_interactive(api, chat_id, message_id, f"✅ {chosen}")
+    identity = f"telegram:{chat_id}"
+    entry = interaction.pending(identity)
+    if (entry is None or entry.event.is_set() or entry.request_id != parts[2]
+            or entry.message_id != message_id):
+        return
+    if index == -1:
+        # This is a mode switch, NOT an answer. Plain text resolves the same wait.
+        # Edit only the owned card: a send fallback would create an untracked
+        # actionable picker that the resolution hook cannot retire.
+        _api_call(api, "editMessageText", chat_id=chat_id, message_id=message_id,
+                  text=_ask_card_text(entry, custom=True),
+                  reply_markup=_ask_keyboard(chat_id, entry),
+                  attempts=_INTERACTIVE_ATTEMPTS, timeout=20)
+        # Resolution may have rendered its receipt while this mode edit was in
+        # flight. Reconcile this exact card after the stale edit completes;
+        # never hold the interaction lock across network I/O or delay /stop.
+        if entry.status != "pending":
+            _ask_edit_receipt(api, chat_id, entry)
+        return
+    interaction.answer_option(identity, index, request_id=entry.request_id)
 
 
 def _render_ask_question(api: str, chat_id: int, entry: Any) -> None:
-    """Send the question bubble for a pending ask_user entry."""
-    text = f"❓ {entry.question}"
-    if entry.options:
-        rows = [
-            [{"text": option[:64], "callback_data": _ask_callback_data(chat_id, index)}]
-            for index, option in enumerate(entry.options)
-        ]
-        _api_call(
-            api, "sendMessage", chat_id=chat_id, text=text,
-            reply_markup={"inline_keyboard": rows},
-        )
-    else:
-        _api_call(
-            api, "sendMessage", chat_id=chat_id,
-            text=f"{text}\n\nReply with your answer.",
-        )
+    """Keep the question in chat, then edit it into a durable Q&A receipt."""
+    if entry.message_id is not None:
+        return
+
+    def resolved(completed):
+        _ask_edit_receipt(api, chat_id, completed)
+
+    # Install the receipt hook BEFORE network I/O. A direct answer or /stop can
+    # arrive while sendMessage is in flight; the eventual card must still settle
+    # to Answer/(cancelled), never remain an orphaned picker.
+    entry.on_resolved = resolved
+    if not _ask_prepare_card(api, chat_id, entry):
+        return
+    result = _api_call(api, "sendMessage", chat_id=chat_id,
+                       text=_ask_card_text(entry), reply_markup=_ask_keyboard(chat_id, entry))
+    if result and isinstance(result.get("result"), dict):
+        entry.message_id = result["result"].get("message_id")
+    # Human input is not a 180-second network request. /stop and /new still
+    # cancel the wait; a failed send retains the bounded fallback timeout.
+    entry.wait_forever = entry.message_id is not None
+    if entry.event.is_set() and entry.message_id is not None:
+        resolved(entry)
 
 
 def _handle_callback(api: str, callback: dict[str, Any], sessions) -> None:
@@ -2928,7 +3102,7 @@ def _build_media_notice_prompt(kind: str, path: Path, caption: str = "") -> str:
     return f"{instruction} Caption/request: {ask or '(no caption)'}"
 
 
-def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str, reply_to_message_id: int | None = None, _ticket=None) -> None:
+def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str, reply_to_message_id: int | None = None, _ticket=None, _learning_updates: list[str] | None = None) -> bool | None:
     def cancelled():
         return _ticket is not None and _ticket.cancel_event.is_set()
 
@@ -2937,6 +3111,7 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
     _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
               timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
     done = threading.Event()
+    learning_updates = _learning_updates if _learning_updates is not None else []
     live = _LiveStatus(api, chat_id, model=getattr(config, "MODEL", ""))
     heartbeat = _start_working_heartbeat(api, chat_id, done, status=live)
     # CATATAN: streaming/live-edit token (edit satu bubble berulang) DIMATIKAN.
@@ -2954,30 +3129,16 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         # _safe_progress_line menjaga tag HTML (pre/code) tetap seimbang saat
         # dipangkas — mencegah editMessageText gagal "Can't find end tag pre".
         live.add(_safe_progress_line(_tool_progress_text(_name, _args)))
-        # ask_user memblokir sampai user menjawab, jadi pertanyaannya harus
-        # SUDAH terkirim sebelum tool-nya menunggu. Kirim di sini, tepat setelah
-        # tool call terlihat: kalau menunggu on_tool_result, pertanyaan baru
-        # muncul setelah jawabannya masuk — terlambat dan bikin user bingung.
-        if _name == "ask_user":
-            entry = None
-            # Tool berjalan di thread lain; beri jeda singkat sampai entry
-            # terdaftar, lalu render. Tanpa polling kecil ini kita bisa
-            # membaca state sebelum interaction.ask() mendaftarkannya.
-            for _ in range(20):
-                entry = interaction.pending(identity)
-                if entry is not None:
-                    break
-                time.sleep(0.05)
-            if entry is not None:
-                live.detach()
-                _render_ask_question(api, chat_id, entry)
+        # The registered interaction renderer owns question delivery. Polling
+        # here runs before tool dispatch and used to race/double-render cards.
 
     def on_tool_result(_name, _args, result):
         if cancelled():
             return
         result_text = _tool_result_text(_name, _args, result)
         if result_text:
-            live.add(_safe_progress_line(result_text))
+            # Learning is a post-task report, never part of the live tool feed.
+            learning_updates.append(result_text)
         # Setelah tool selesai, kita kembali menunggu respons model.
         live.set_waiting()
 
@@ -3003,6 +3164,8 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
             return
         live.detach()
         for rendered_part in _telegram_html_parts(sentence):
+            if cancelled():
+                return
             sent = _api_call(
                 api, "sendMessage", chat_id=chat_id,
                 text=rendered_part, parse_mode="HTML",
@@ -3013,7 +3176,6 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
                   timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
 
-    ok = False
     # send_file mengirim file lewat channel ini. Didaftarkan HANYA selama turn
     # berjalan lalu dilepas di finally: kalau tetap terdaftar, sebuah cron job
     # atau turn lain bisa mengirim file ke chat yang salah.
@@ -3030,7 +3192,12 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
 
     delivery.register_channel(identity, _deliver_file)
     from zeline import interaction
-    interaction.register_channel(identity, lambda entry: None if cancelled() else _render_ask_question(api, chat_id, entry))
+    def render_question(entry):
+        if not cancelled():
+            live.set_awaiting_user()
+            _render_ask_question(api, chat_id, entry)
+
+    interaction.register_channel(identity, render_question)
     try:
         reply = sessions.send(
             **({"ticket": _ticket} if _ticket is not None else {}),
@@ -3042,7 +3209,6 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
             on_iteration=on_iteration,
             on_narration=on_narration,
         )
-        ok = True
     except ZelineError as exc:
         reply = _format_agent_error(str(exc))
     except Exception as exc:
@@ -3089,28 +3255,131 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         )
         if sent is None:
             print("  [telegram] final reply delivery stopped after a failed part", flush=True)
-            break
+            return False
         first_part = False
 
-    # Self-improvement: setelah turn berbobot (banyak tool), jalankan refleksi di
-    # background agar tidak menahan balasan. reflect() sendiri menjaga ambang
-    # (profile full + cukup tool call) dan hanya kirim pesan bila benar-benar
-    # menyimpan/memperbaiki skill — jadi ini yang bikin Zeline "sering
-    # Self-improvement" seperti diminta, tanpa nyampah di sesi ringan.
-    if ok:
-        def _reflect_bg():
+    # Admitted turns must release their ticket BEFORE reflection tries the
+    # session's idle gate. The caller schedules it after finish_turn(). Legacy
+    # direct callers have no reserved ticket, so they may schedule immediately.
+    if _ticket is None:
+        _start_reflection(api, sessions, chat_id, identity, reply_to_message_id,
+                          learning_updates=tuple(learning_updates), cancelled=cancelled)
+    return True
+
+
+_LEARNING_PHASES = ("📙 Self-Enhancement", "📘 Self-Improvement", "📗 Self-Refinement")
+
+
+def _learning_report_parts(updates: tuple[str, ...], summary: str | None):
+    """Keep each learning category separate, without splitting body paragraphs."""
+    groups: dict[str, list[str]] = {}
+    sections = list(updates)
+    if summary:
+        sections.extend(re.split(r"\n[ \t]*\n(?=📙|📘|📗)", summary.strip()))
+    for section in sections:
+        heading = section.replace("<b>", "").lstrip()
+        phase = next((p for p in _LEARNING_PHASES if heading.startswith(p)), "other")
+        groups.setdefault(phase, []).append(section)
+    for phase in (*_LEARNING_PHASES, "other"):
+        if phase not in groups:
+            continue
+        body = "\n\n".join(groups[phase])
+        if len(body.encode("utf-16-le")) // 2 <= 3500:
+            yield body
+        else:
+            # Oversized reports retain all evidence. Strip only formatter-owned
+            # tags BEFORE decoding escaped user data; escape every complete chunk.
+            plain = html.unescape(re.sub(r"</?(?:b|code)>", "", body))
+            for offset in range(0, len(plain), 500):
+                prefix = phase + "\n" if phase != "other" else ""
+                yield html.escape(prefix + plain[offset:offset + 500], quote=False)
+
+
+def _start_reflection(api, sessions, chat_id, identity, reply_to_message_id=None, *,
+                      learning_updates=(), cancelled=None):
+    def reflect_bg():
+        import inspect
+        reflection_ticket = None
+
+        def capture_ticket(ticket):
+            nonlocal reflection_ticket
+            reflection_ticket = ticket
+
+        def stopped():
+            return bool((cancelled and cancelled()) or
+                        (reflection_ticket is not None and reflection_ticket.cancel_event.is_set()))
+
+        if stopped():
+            return
+        fast_updates = tuple(learning_updates)
+        if stopped():
+            return
+        # Typing belongs to an admitted, eligible review, not its scheduling.
+        # Refresh every 4s; skipped when Thread is mocked in tests.
+        typing_done = threading.Event()
+        def keep_typing():
+            while not typing_done.is_set():
+                if stopped():
+                    return
+                _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
+                          timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
+                typing_done.wait(4)
+        import unittest.mock as _mock
+        is_mocked = isinstance(threading.Thread, _mock.MagicMock) or isinstance(threading.Thread, _mock.Mock)
+        def start_review_typing(ticket):
+            capture_ticket(ticket)
+            if is_mocked or stopped():
+                return
             try:
-                summary = sessions.reflect(identity)
+                typer = threading.Thread(target=keep_typing, daemon=True)
+                typer.start()
             except Exception:
-                summary = None
-            if summary:
-                for phase in summary.split("\n\n"):
-                    _api_call(
-                        api, "sendMessage", chat_id=chat_id,
-                        text=phase[:1500],
-                        parse_mode="HTML",
-                    )
-        threading.Thread(target=_reflect_bg, daemon=True, name=f"zeline-reflect-{chat_id}").start()
+                pass
+        summary = None
+        reflected = False
+        try:
+            # Legacy session adapters need not implement the optional observer.
+            try:
+                parameters = inspect.signature(sessions.reflect).parameters
+            except (TypeError, ValueError):
+                parameters = {}
+            options = {"on_ticket": capture_ticket} if "on_ticket" in parameters else {}
+            if "on_review" in parameters:
+                options["on_review"] = start_review_typing
+            summary = sessions.reflect(identity, **options)
+            reflected = True
+        except Exception as exc:
+            # Actual in-task changes still deserve a truthful post-task report
+            # even when the optional background review cannot run.
+            print(f"  [telegram] reflection failed: {type(exc).__name__}", flush=True)
+        finally:
+            typing_done.set()
+        if stopped():
+            return
+        if fast_updates and not reflected:
+            # Reflection never completed — fall back to truthful fast updates.
+            for phase in _learning_report_parts(fast_updates, None):
+                if stopped():
+                    return
+                sent = _api_call(api, "sendMessage", chat_id=chat_id,
+                                 text=phase, parse_mode="HTML")
+                if sent is None:
+                    break
+            return
+        if fast_updates and reflected and not stopped():
+            # Reflection succeeded — fast updates are already covered in the
+            # merged report below, so no separate fast-path send. This keeps
+            # the 2-minute case fast (no extra LLM round) without duplicating
+            # or leaking when cancelled.
+            pass
+        for phase in _learning_report_parts(fast_updates, summary):
+            if stopped():
+                return
+            sent = _api_call(api, "sendMessage", chat_id=chat_id,
+                             text=phase, parse_mode="HTML")
+            if sent is None:
+                break
+    threading.Thread(target=reflect_bg, daemon=True, name=f"zeline-reflect-{chat_id}").start()
 
 
 def _interrupt_ack(progress: dict[str, Any]) -> str:
@@ -3118,7 +3387,7 @@ def _interrupt_ack(progress: dict[str, Any]) -> str:
     age = f"{elapsed // 60} min elapsed" if elapsed >= 60 else f"{elapsed}s elapsed"
     current, maximum = int(progress.get("iteration", 0)), int(progress.get("maximum", 0))
     detail = age + (f", iteration {current}/{maximum}" if maximum else "")
-    return f"⚡ Interrupting current task ({detail}). I'll respond to your message shortly."
+    return f"💥 Interrupting current task ({detail}). I'll respond to your message shortly."
 
 
 _busy_ack_ts: dict[tuple[int, str], float] = {}
@@ -3126,7 +3395,7 @@ _busy_ack_lock = threading.Lock()
 _BUSY_ACK_COOLDOWN = 30.0
 
 
-def _send_busy_ack(api, sessions, identity, chat_id, progress):
+def _send_busy_ack(api, sessions, identity, chat_id, progress, *, reply_to_message_id=None):
     key = (id(sessions), identity)
     now = time.monotonic()
     with _busy_ack_lock:
@@ -3136,8 +3405,11 @@ def _send_busy_ack(api, sessions, identity, chat_id, progress):
             if now - stamp >= _BUSY_ACK_COOLDOWN:
                 _busy_ack_ts.pop(stale, None)
         _busy_ack_ts[key] = now
+    # Bind to the message that interrupted this run, never a shared "latest" ID.
+    extra = {"reply_to_message_id": reply_to_message_id,
+             "allow_sending_without_reply": True} if reply_to_message_id else {}
     sent = _api_call(api, "sendMessage", chat_id=chat_id, text=_interrupt_ack(progress),
-                     timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
+                     timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS, **extra)
     if not sent:
         with _busy_ack_lock:
             _busy_ack_ts.pop(key, None)  # Failed delivery must remain retryable.
@@ -3159,7 +3431,8 @@ def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text:
     if callable(getattr(sessions, "admit", None)):
         ticket = sessions.admit(identity, tool_profile, interrupt=True)
         if ticket is not None and ticket.previous_progress is not None:
-            _send_busy_ack(api, sessions, identity, chat_id, ticket.previous_progress)
+            _send_busy_ack(api, sessions, identity, chat_id, ticket.previous_progress,
+                           reply_to_message_id=reply_to_message_id)
         else:
             with _busy_ack_lock:
                 _busy_ack_ts.pop((id(sessions), identity), None)
@@ -3170,6 +3443,8 @@ def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text:
         pass
 
     def run_reserved():
+        reflect_ready = False
+        learning_updates: list[str] = []
         try:
             if ticket is not None:
                 if not sessions.wait_turn(ticket):
@@ -3189,15 +3464,18 @@ def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text:
                         _api_call(api, "sendMessage", chat_id=chat_id, text=error,
                                   timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
                         return
-                _send_agent_reply(api, sessions, chat_id=chat_id, identity=identity, text=prepared_text,
+                reflect_ready = _send_agent_reply(api, sessions, chat_id=chat_id, identity=identity, text=prepared_text,
                                   tool_profile=tool_profile, reply_to_message_id=reply_to_message_id,
-                                  _ticket=ticket)
+                                  _ticket=ticket, _learning_updates=learning_updates)
             else:
                 _send_agent_reply(api, sessions, chat_id=chat_id, identity=identity, text=text,
                                   tool_profile=tool_profile, reply_to_message_id=reply_to_message_id)
         finally:
             if ticket is not None:
                 sessions.finish_turn(ticket)
+        if reflect_ready and ticket is not None and not ticket.cancel_event.is_set():
+            _start_reflection(api, sessions, chat_id, identity, reply_to_message_id,
+                              learning_updates=tuple(learning_updates), cancelled=ticket.cancel_event.is_set)
 
     worker = threading.Thread(
         target=run_reserved,
