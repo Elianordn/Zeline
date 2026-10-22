@@ -53,10 +53,13 @@ class SummarizeDiffTest(unittest.TestCase):
         self.assertIn("X", s)
 
     def test_max_hunks_limit(self):
-        a = "\n".join(str(i) for i in range(100))
-        b = "\n".join(str(i) + "!" for i in range(100))
+        # Alternating changed/unchanged lines force separate hunks
+        # even at context=0.
+        a = "\n".join(f"keep{i}\nold{i}" for i in range(50))
+        b = "\n".join(f"keep{i}\nnew{i}" for i in range(50))
         s = T.summarize_diff(a, b, max_hunks=2)
-        self.assertIn("and 98 more hunk", s)
+        assert s is not None
+        self.assertIn("and 48 more hunk", s)
 
 
 if __name__ == "__main__":
