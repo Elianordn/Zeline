@@ -57,13 +57,14 @@ class SitemapTest(unittest.TestCase):
     def test_prefixed_namespace(self):
         # Real-world documents sometimes bind the sitemap namespace to a
         # prefix instead of the default namespace.
-        prefixed = SITEMAP.replace("urlset", 'urlset xmlns:sm="http://www.sitemaps.org/schemas/sitemap/0.9"').replace(
-            "<url>", "<sm:url>").replace("</url>", "</sm:url>").replace(
-            "<loc>", "<sm:loc>").replace("</loc>", "</sm:loc>").replace(
-            "<lastmod>", "<sm:lastmod>").replace("</lastmod>", "</sm:lastmod>").replace(
-            "<changefreq>", "<sm:changefreq>").replace("</changefreq>", "</sm:changefreq>").replace(
-            "<priority>", "<sm:priority>").replace("</priority>", "</sm:priority>").replace(
-            'xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" ', '')
+        prefixed = SITEMAP.replace(
+            '<urlset xmlns=', '<urlset xmlns:sm="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns='
+        ).replace(
+            '<url>', '<sm:url>').replace('</url>', '</sm:url>').replace(
+            '<loc>', '<sm:loc>').replace('</loc>', '</sm:loc>').replace(
+            '<lastmod>', '<sm:lastmod>').replace('</lastmod>', '</sm:lastmod>').replace(
+            '<changefreq>', '<sm:changefreq>').replace('</changefreq>', '</sm:changefreq>').replace(
+            '<priority>', '<sm:priority>').replace('</priority>', '</sm:priority>')
         entries = S.parse_sitemap(prefixed)
         self.assertTrue(any(e["loc"] == "https://example.com/" for e in entries))
 

@@ -22,7 +22,7 @@ from xml.etree import ElementTree
 from typing import Optional
 
 _NS = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
-_TAG_RE = re.compile(r"<(\w+)>\s*([^<]*?)\s*</\1>")
+_TAG_RE = re.compile(r"<([\w:]+)>\s*([^<]*?)\s*</\1>")
 
 
 def _localname(tag: str) -> str:
