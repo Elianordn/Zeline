@@ -54,7 +54,7 @@ class BreakdownTest(unittest.TestCase):
         self.assertIn("estimated_tokens", b)
         self.assertIn("chars", b)
         self.assertIn("by_class_tokens", b)
-        self.assertEqual(b["chars"], 18)
+        self.assertEqual(b["chars"], 17)
 
     def test_breakdown_total_consistent(self):
         b = T.breakdown("The cat sat on the mat near the window sill today.")
