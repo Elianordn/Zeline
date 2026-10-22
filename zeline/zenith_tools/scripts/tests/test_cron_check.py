@@ -23,7 +23,7 @@ class ParseTest(unittest.TestCase):
 
     def test_aliases(self):
         self.assertEqual(C.parse("0 0 * * mon").day_of_week, {1})
-        self.assertEqual(C.parse("0 0 * jan").month, {1})
+        self.assertEqual(C.parse("0 0 1 jan *").month, {1})
 
     def test_dow_7_is_sunday(self):
         self.assertEqual(C.parse("0 0 * * 7").day_of_week, {0})

@@ -56,8 +56,7 @@ class CronSpec:
         # POSIX cron rule: when both DOM and DOW are restricted, either may
         # fire. When one is '*', only the other restricts.
         dom_ok = dt.day in self.day_of_month
-        dow_ok = dt.weekday() == 6 and 0 in self.day_of_week or \
-            dt.weekday() in self.day_of_week  # Monday=0 ... Sunday=6
+        dow_ok = ((dt.weekday() + 1) % 7) in self.day_of_week  # cron: Sun=0..Sat=6
         if self.dom_star and self.dow_star:
             return True
         if self.dom_star:
