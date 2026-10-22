@@ -49,7 +49,7 @@ class RedactTest(unittest.TestCase):
     def test_redact_removes_secret(self):
         clean, hits = S.redact(f"curl -H 'Authorization: Bearer {GH}'")
         self.assertNotIn(GH, clean)
-        self.assertIn("REDACTED(github_pat)", clean)
+        self.assertIn("REDACTED](github_pat)", clean)
         self.assertEqual(len(hits), 1)
 
     def test_clean_text_untouched(self):
